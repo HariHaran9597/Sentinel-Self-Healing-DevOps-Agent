@@ -1,0 +1,12 @@
+.git
+.venv
+__pycache__
+*.pyc
+logs/
+agent/data/
+.env
+.pytest_cache
+docs/
+scripts/
+*.md
+!agent/runbooks/

@@ -1,0 +1,169 @@
+"""Fast unit tests for the pieces that don't need Docker or network:
+runbook parsing, monitor grouping/cooldown, the incident store, and the full
+LangGraph happy path in dry-run mode (with the health check stubbed).
+"""
+from __future__ import annotations
+
+import sys
+import time
+from pathlib import Path
+
+import pytest
+
+AGENT_DIR = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(AGENT_DIR))
+
+from app import runtime  # noqa: E402
+from app.config import Settings  # noqa: E402
+from app.graph import build_graph  # noqa: E402
+from app.monitor import LogMonitor  # noqa: E402
+from app.runbooks import parse_runbook  # noqa: E402
+from app.store import IncidentStore  # noqa: E402
+
+RUNBOOK_SAMPLE = """---
+id: RB-999
+title: Sample runbook
+summary: A sample.
+error_codes: [ERR_SAMPLE]
+severity: SEV-2
+fix_action: restart_container
+fix_command: docker restart demo-server
+risk: low
+---
+
+## Symptoms
+Something broke.
+
+## Resolution
+Restart it.
+"""
+
+
+# ---------------------------------------------------------------- runbooks
+
+def test_parse_runbook(tmp_path):
+    path = tmp_path / "RB-999-sample.md"
+    path.write_text(RUNBOOK_SAMPLE, encoding="utf-8")
+    parsed = parse_runbook(path)
+    assert parsed["meta"]["id"] == "RB-999"
+    assert parsed["meta"]["error_codes"] == ["ERR_SAMPLE"]
+    assert "Resolution" in parsed["sections"]
+    assert "Restart it." in parsed["sections"]["Resolution"]
+
+
+# ---------------------------------------------------------------- monitor
+
+def _fake_error_line(code="ERR_TEST"):
+    ts = time.strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    return f"{ts} FATAL [supervisor] something terrible. code={code}"
+
+
+def test_monitor_groups_consecutive_error_lines():
+    raised = []
+    collect = lambda code, excerpt: raised.append((code, excerpt))
+    monitor = LogMonitor("unused", 0.1, 30, collect)
+    monitor._process(["INFO access GET /x 200 5ms", _fake_error_line(), _fake_error_line()])
+    assert len(raised) == 1
+    assert raised[0][0] == "ERR_TEST"
+    assert len(raised[0][1]) == 2  # both error lines form one incident excerpt
+
+
+def test_monitor_cooldown_suppresses_repeat_codes():
+    raised = []
+    collect = lambda code, excerpt: raised.append((code, excerpt))
+    monitor = LogMonitor("unused", 0.1, 30, collect)
+    monitor._process([_fake_error_line()])
+    monitor._process([_fake_error_line()])
+    assert len(raised) == 1
+
+
+# ---------------------------------------------------------------- store
+
+def test_store_lifecycle_and_iso_twins():
+    store = IncidentStore()
+    store.create("INC-1", error_code="ERR_A")
+    store.update("INC-1", proposed_at=1700000000.0)
+    record = store.get("INC-1")
+    assert record["proposed_at_iso"] is not None
+    store.event("INC-1", "approved", "ok")
+    assert store.get("INC-1")["events"][0]["type"] == "approved"
+    store.create("INC-2")
+    assert [r["id"] for r in store.list()] == ["INC-2", "INC-1"]  # newest first
+
+
+# ---------------------------------------------------------------- graph (dry-run)
+
+class _StubRunbooks:
+    def query(self, error_code, context=""):
+        return {
+            "rb_id": "RB-001", "title": "Database connection pool exhausted",
+            "summary": "Pool exhausted.", "error_codes": [error_code],
+            "severity": "SEV-2", "fix_action": "restart_container",
+            "fix_command": "docker restart demo-server", "risk": "low",
+            "resolution": "Restart the service.", "snippet": "...",
+            "distance": 0.1, "exact_match": True,
+        }
+
+
+@pytest.fixture()
+def wired_runtime(monkeypatch, tmp_path):
+    runtime.settings = Settings()  # real defaults are side-effect free
+    runtime.settings.require_approval = True
+    runtime.settings.executor_mode = "dry-run"
+    runtime.settings.openai_api_key = ""
+    runtime.store = IncidentStore()
+    runtime.runbooks = _StubRunbooks()
+
+    from app import executor
+    monkeypatch.setattr(executor, "wait_healthy", lambda timeout: (True, "health check 200 OK (stub)"))
+    yield runtime
+    runtime.settings = runtime.store = runtime.runbooks = None
+
+
+def test_graph_pauses_at_hitl_and_resolves_after_approval(wired_runtime):
+    graph = build_graph()
+    runner = runtime.runner
+    runner.bind(graph)
+    config = runner.config("INC-T1")
+    runtime.store.create("INC-T1", error_code="ERR_DB_CONN_POOL_EXHAUSTED")
+
+    runner._invoke("INC-T1", {
+        "incident_id": "INC-T1", "detected_at": time.time(),
+        "error_code": "ERR_DB_CONN_POOL_EXHAUSTED", "raw_log": [_fake_error_line()],
+    })
+
+    record = runtime.store.get("INC-T1")
+    assert record["status"] == "waiting_approval"
+    assert record["fix"]["command"] == "docker restart demo-server"
+
+    from langgraph.types import Command
+    runner._invoke("INC-T1", Command(resume={"approved": True, "approver": "test"}))
+
+    record = runtime.store.get("INC-T1")
+    assert record["status"] == "resolved"
+    assert record["proposed_at"] is not None and record["resolved_at"] is not None
+
+
+def test_graph_reject_path_leaves_system_untouched(wired_runtime):
+    graph = build_graph()
+    runtime.runner.bind(graph)
+    runtime.store.create("INC-T2", error_code="ERR_DB_CONN_POOL_EXHAUSTED")
+    runtime.runner._invoke("INC-T2", {
+        "incident_id": "INC-T2", "detected_at": time.time(),
+        "error_code": "ERR_DB_CONN_POOL_EXHAUSTED", "raw_log": [_fake_error_line()],
+    })
+    from langgraph.types import Command
+    runtime.runner._invoke("INC-T2", Command(resume={"approved": False, "approver": "test", "reason": "not now"}))
+    assert runtime.store.get("INC-T2")["status"] == "rejected"
+
+
+def test_graph_escalates_unknown_error(wired_runtime, monkeypatch):
+    runtime.runbooks = _StubRunbooks()
+    monkeypatch.setattr(_StubRunbooks, "query", lambda self, code, context="": None)
+    runtime.store.create("INC-T3", error_code="ERR_NOVEL")
+    runtime.runner.bind(build_graph())
+    runtime.runner._invoke("INC-T3", {
+        "incident_id": "INC-T3", "detected_at": time.time(),
+        "error_code": "ERR_NOVEL", "raw_log": [_fake_error_line("ERR_NOVEL")],
+    })
+    assert runtime.store.get("INC-T3")["status"] == "escalated"
