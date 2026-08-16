@@ -179,20 +179,6 @@ pytest agent/tests -q
 
 Covers runbook parsing, monitor grouping/cooldown, incident store, and the full LangGraph flow in dry-run mode — including pause-at-interrupt → resume-approve → resolved, the reject path, and escalation on unknown errors.
 
-## Recording the portfolio video
-
-1. `docker compose up --build`, open http://localhost:8000 (OBS / ScreenToGif recording).
-2. Click **DB pool exhausted**. The log floods red → incident card appears with diagnosis and the exact fix command — point at the *detected→proposed* timing badge.
-3. Click **Approve** — status flips executing → verifying → resolved; the server dot turns green and heartbeats return in the log pane.
-4. Click **TLS cert expired** → **Reject** — cert renewal is intentionally manual; the agent never touches secrets.
-5. Close on the incident timeline: detect → match → propose → approve → execute → verify.
-
-## Roadmap
-
-- [ ] Slack webhook as an alternative HITL surface (same `Command(resume=...)` resume)
-- [ ] SQLite checkpointer for durable interrupts across agent restarts
-- [ ] Prometheus metrics (`sentinel_incidents_total`, `sentinel_heal_seconds`)
-- [ ] Multi-service targets with per-target runbooks
 
 ## License
 
