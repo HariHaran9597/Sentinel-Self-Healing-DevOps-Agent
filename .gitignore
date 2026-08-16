@@ -6,3 +6,13 @@ logs/
 agent/data/
 *.log
 .env
+
+# Graph-ML artifacts
+Graph-ML/data/*.csv
+Graph-ML/data/*.pt
+Graph-ML/models/*.pt
+Graph-ML/models/*.npz
+Graph-ML/models/*.json
+Graph-ML/lib/
+Graph-ML/*.egg-info/
+Graph-ML/src/*.egg-info/

@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>FraudGraph — GNN Fraud Ring Detection</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  body { background: #0f172a; color: #e2e8f0; font-family: system-ui, sans-serif; }
+  .card { background: #1e293b; border-radius: 0.75rem; padding: 1.5rem; }
+  .badge { display: inline-block; padding: 0.15rem 0.6rem; border-radius: 9999px; font-size: 0.75rem; font-weight: 600; }
+  .badge-fraud { background: #dc2626; color: white; }
+  .badge-legit { background: #16a34a; color: white; }
+  .badge-model { background: #2563eb; color: white; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; padding: 0.5rem; border-bottom: 1px solid #334155; color: #94a3b8; font-size: 0.8rem; text-transform: uppercase; }
+  td { padding: 0.5rem; border-bottom: 1px solid #1e293b; }
+  tr:hover td { background: #1e293b; }
+  .risk-bar { height: 8px; border-radius: 4px; background: #334155; }
+  .risk-fill { height: 100%; border-radius: 4px; transition: width 0.3s; }
+  #error { color: #f87171; display: none; }
+  input, button { background: #334155; color: #e2e8f0; border: 1px solid #475569; border-radius: 0.5rem; padding: 0.5rem 1rem; }
+  button:hover { background: #475569; }
+</style>
+</head>
+<body class="min-h-screen">
+<header class="border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <span class="text-xl font-bold text-white">Graph</span>
+    <span class="badge badge-model">ML</span>
+  </div>
+  <div class="flex items-center gap-4 text-sm text-slate-400">
+    <span id="model-badge"></span>
+    <a href="/docs" class="underline">API Docs</a>
+    <a href="/viz" class="underline">Ring Visualization</a>
+  </div>
+</header>
+
+<main class="max-w-6xl mx-auto px-6 py-8 grid gap-6">
+
+  <!-- Metrics row -->
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-4" id="metrics-row"></div>
+
+  <!-- Account lookup -->
+  <section class="card">
+    <h2 class="text-lg font-semibold mb-4">Account Lookup</h2>
+    <div class="flex gap-2">
+      <input id="account-input" placeholder="e.g. C1234" class="flex-1"/>
+      <button onclick="lookupAccount()">Score</button>
+    </div>
+    <div id="error" class="mt-2 text-sm"></div>
+    <div id="account-result" class="mt-4 hidden">
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div><p class="text-xs text-slate-400 uppercase">Account</p><p id="res-account" class="font-mono font-bold"></p></div>
+        <div><p class="text-xs text-slate-400 uppercase">Risk Score</p><p id="res-risk" class="font-mono font-bold text-2xl"></p></div>
+        <div><p class="text-xs text-slate-400 uppercase">Prediction</p><p id="res-pred"></p></div>
+        <div><p class="text-xs text-slate-400 uppercase">Ground Truth</p><p id="res-gt"></p></div>
+      </div>
+      <div class="mt-3 risk-bar"><div id="risk-fill" class="risk-fill"></div></div>
+    </div>
+  </section>
+
+  <!-- Detected Rings -->
+  <section class="card">
+    <h2 class="text-lg font-semibold mb-4">Detected Fraud Rings <span class="text-sm text-slate-400">(Louvain communities ranked by risk density)</span></h2>
+    <div id="rings-error" class="text-sm text-yellow-400 mb-2"></div>
+    <div class="overflow-x-auto">
+      <table>
+        <thead><tr>
+          <th>Rank</th><th>Size</th><th>Mean Risk</th><th>Score</th>
+          <th>Fraud Count</th><th>Fraud Density</th><th>Matched Ring</th>
+        </tr></thead>
+        <tbody id="rings-table"></tbody>
+      </table>
+    </div>
+  </section>
+
+</main>
+
+<script>
+const API = '';
+let state = {};
+
+async function init() {
+  try {
+    const [metrics, health] = await Promise.all([
+      fetch(API + '/metrics').then(r => r.json()),
+      fetch(API + '/health').then(r => r.json()),
+    ]);
+    state = { metrics, health };
+    renderMetrics(metrics);
+    document.getElementById('model-badge').textContent = 'Model: ' + health.model;
+  } catch (e) { console.error(e); }
+}
+
+function renderMetrics(m) {
+  const row = document.getElementById('metrics-row');
+  const ds = m.dataset || {};
+  const cards = [
+    { label: 'Accounts', value: (ds.n_accounts || '?').toLocaleString(), sub: `${(ds.fraud_rate * 100 || 0).toFixed(1)}% fraud` },
+    { label: 'Best PR-AUC', value: bestVal(m, 'pr_auc'), sub: 'held-out test set' },
+    { label: 'Best F1', value: bestVal(m, 'best_f1'), sub: 'precision-recall tradeoff' },
+  ];
+  row.innerHTML = cards.map(c => `
+    <div class="card text-center">
+      <p class="text-3xl font-bold text-white">${c.value}</p>
+      <p class="text-sm text-slate-400">${c.label}</p>
+      <p class="text-xs text-slate-500">${c.sub}</p>
+    </div>`).join('');
+}
+
+function bestVal(m, key) {
+  const models = m.models || {};
+  let best = '-';
+  for (const [name, vals] of Object.entries(models)) {
+    const v = vals[key];
+    if (v !== undefined && (best === '-' || v > best)) best = v;
+  }
+  return typeof best === 'number' ? best.toFixed(3) : best;
+}
+
+async function lookupAccount() {
+  const input = document.getElementById('account-input');
+  const err = document.getElementById('error');
+  const result = document.getElementById('account-result');
+  err.style.display = 'none';
+  result.classList.add('hidden');
+  try {
+    const r = await fetch(API + '/score/' + input.value.trim());
+    if (!r.ok) { const e = await r.json(); throw new Error(e.detail || r.status); }
+    const data = await r.json();
+    document.getElementById('res-account').textContent = data.account;
+    document.getElementById('res-risk').textContent = data.fraud_risk.toFixed(4);
+    const riskColor = data.predicted === 'fraud' ? '#dc2626' : '#16a34a';
+    document.getElementById('res-risk').style.color = riskColor;
+    document.getElementById('res-pred').innerHTML = `<span class="badge ${data.predicted === 'fraud' ? 'badge-fraud' : 'badge-legit'}">${data.predicted}</span>`;
+    document.getElementById('res-gt').innerHTML = data.ground_truth
+      ? `<span class="badge ${data.ground_truth === 'fraud' ? 'badge-fraud' : 'badge-legit'}">${data.ground_truth}</span>`
+      : '<span class="text-slate-500">N/A</span>';
+    const fill = document.getElementById('risk-fill');
+    fill.style.width = (data.fraud_risk * 100) + '%';
+    fill.style.background = `linear-gradient(90deg, #2563eb, ${riskColor})`;
+    result.classList.remove('hidden');
+  } catch (e) { err.textContent = e.message; err.style.display = 'block'; }
+}
+
+async function loadRings() {
+  try {
+    const r = await fetch(API + '/rings');
+    const data = await r.json();
+    const tbody = document.getElementById('rings-table');
+    const flagged = data.rings.filter(ring => ring.rank != null);
+    tbody.innerHTML = flagged.map(ring => `
+      <tr>
+        <td class="font-mono">#${ring.rank}</td>
+        <td>${ring.size}</td>
+        <td class="font-mono">${ring.mean_risk}</td>
+        <td class="font-mono">${ring.ring_score}</td>
+        <td><span class="badge ${ring.true_fraud_count > 0 ? 'badge-fraud' : 'badge-legit'}">${ring.true_fraud_count}</span></td>
+        <td>${(ring.true_fraud_density * 100).toFixed(1)}%</td>
+        <td class="font-mono">${ring.matched_injected_ring >= 0 ? 'Ring ' + ring.matched_injected_ring : '—'}</td>
+      </tr>`).join('');
+    if (data.ring_level_metrics) {
+      const rm = data.ring_level_metrics;
+      document.getElementById('rings-error').textContent =
+        `${rm.method}: precision ${rm.precision} · recall ${rm.recall} (${rm.true_fraud_in_flagged}/${rm.total_fraud} fraud caught)`;
+    }
+  } catch (e) {
+    document.getElementById('rings-error').textContent = 'Rings not available — run detect_rings.py first.';
+  }
+}
+
+document.getElementById('account-input').addEventListener('keydown', e => { if (e.key === 'Enter') lookupAccount(); });
+
+init();
+loadRings();
+</script>
+</body>
+</html>

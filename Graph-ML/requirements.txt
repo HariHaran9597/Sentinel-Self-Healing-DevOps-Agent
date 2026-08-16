@@ -1,0 +1,13 @@
+# FraudGraph — Graph-ML fraud ring detection
+# Note: on Windows, PyPI torch wheels are CPU-only already.
+# On Linux/Docker use: --extra-index-url https://download.pytorch.org/whl/cpu
+torch>=2.2
+torch-geometric>=2.5
+networkx>=3.0
+numpy>=1.26
+pandas>=2.0
+scikit-learn>=1.4
+pyvis>=0.3.2
+matplotlib>=3.8
+fastapi>=0.110
+uvicorn[standard]>=0.29

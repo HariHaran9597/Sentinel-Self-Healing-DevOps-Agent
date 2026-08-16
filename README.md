@@ -19,6 +19,15 @@
 
 ---
 
+## Repository Index
+
+| Project | Description |
+|---|---|
+| **[Sentinel](.)** *(this project)* | Self-healing DevOps agent — LangGraph + ChromaDB + FastAPI |
+| **[Graph-ML](./Graph-ML/)** | GNN fraud ring detection — PyTorch Geometric + NetworkX + FastAPI |
+
+---
+
 ## The self-healing loop in action
 
 | Step | What happens | Timing |
