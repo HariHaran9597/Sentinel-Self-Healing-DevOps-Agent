@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel · Self-Healing Ops</title>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d; --text: #c9d1d9;
+    --muted: #8b949e; --accent: #58a6ff; --ok: #3fb950; --warn: #d29922; --crit: #f85149;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  header {
+    display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap;
+    padding: 14px 22px; border-bottom: 1px solid var(--border); background: var(--panel);
+    position: sticky; top: 0; z-index: 5;
+  }
+  .brand { font-size: 17px; font-weight: 700; letter-spacing: 2px; color: #fff; }
+  .brand .pulse { color: var(--accent); }
+  .sub { color: var(--muted); font-size: 12px; }
+  .demo-note { color: var(--warn); font-size: 11px; border: 1px solid var(--warn); border-radius: 5px; padding: 3px 7px; }
+  #statusbar { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; background: var(--muted); }
+  .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+  .dot.bad { background: var(--crit); }
+  main { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 16px; padding: 18px 22px; max-width: 1280px; margin: 0 auto; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: var(--muted); margin: 2px 0 10px; }
+  .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
+  .btnrow { display: flex; gap: 8px; flex-wrap: wrap; }
+  button {
+    background: #21262d; color: var(--text); border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 12px; font-size: 13px; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); color: #fff; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; color: #fff; }
+  button.danger { background: transparent; border-color: var(--crit); color: var(--crit); }
+  button:disabled { opacity: .45; cursor: default; }
+  .inc { border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; margin-bottom: 12px; background: var(--panel); }
+  .inc-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .inc-id { font-weight: 700; color: #fff; }
+  .code { font-family: Consolas, monospace; font-size: 12px; color: var(--warn); }
+  .badge { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; border: 1px solid; }
+  .b-waiting_approval { color: var(--warn); border-color: var(--warn); }
+  .b-approved, .b-executing, .b-verifying, .b-analyzing, .b-detected { color: var(--accent); border-color: var(--accent); }
+  .b-resolved, .b-resolved_manual { color: var(--ok); border-color: var(--ok); }
+  .b-rejected, .b-failed, .b-escalated { color: var(--crit); border-color: var(--crit); }
+  .diag { color: var(--text); font-size: 13px; margin: 8px 0; }
+  .fixline {
+    display: flex; align-items: center; gap: 8px; font-family: Consolas, monospace;
+    font-size: 12.5px; background: #0d1117; border: 1px solid var(--border);
+    border-radius: 6px; padding: 7px 10px; margin: 8px 0;
+  }
+  .fixline .prompt { color: var(--ok); }
+  .timing { color: var(--muted); font-size: 12px; }
+  .timing b { color: var(--accent); }
+  .actions { margin-top: 10px; display: flex; gap: 8px; }
+  pre#log {
+    background: #0d1117; border: 1px solid var(--border); border-radius: 6px;
+    font-size: 11.5px; line-height: 1.45; padding: 10px; height: 520px; overflow: auto;
+    margin: 0; white-space: pre-wrap; word-break: break-all; font-family: Consolas, monospace;
+  }
+  .logline-err { color: var(--crit); }
+  .logline-warn { color: var(--warn); }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+  .ev { font-size: 12px; color: var(--muted); font-family: Consolas, monospace; }
+  .ev b { color: var(--text); font-weight: 600; }
+  #empty { color: var(--muted); font-size: 13px; padding: 18px 0; text-align: center; }
+  .logwrap h2 { display: flex; justify-content: space-between; align-items: center; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand"><span class="pulse">&#9679;</span> SENTINEL</div>
+  <div class="sub">self-healing devops agent &middot; langgraph + chromadb + fastapi</div>
+  <div class="demo-note">interactive simulation</div>
+  <div id="statusbar">
+    <span><span id="agent-dot" class="dot ok"></span>agent</span>
+    <span><span id="server-dot" class="dot bad"></span>payments-api</span>
+    <button id="btn-start" style="display:none">start server</button>
+  </div>
+</header>
+
+<main>
+  <div>
+    <section class="card" style="margin-bottom:16px">
+      <h2>Chaos injection</h2>
+      <p class="hint">Crash <b>payments-api</b> with a production-style failure. Sentinel detects it, retrieves the matching runbook from the vector store and proposes the exact fix &mdash; you stay in control.</p>
+      <div class="btnrow">
+        <button data-mode="db_pool">DB pool exhausted</button>
+        <button data-mode="oom">OOM kill</button>
+        <button data-mode="disk">Disk full</button>
+        <button data-mode="ssl">TLS cert expired</button>
+      </div>
+    </section>
+
+    <section>
+      <h2>Incidents</h2>
+      <div id="inc-list"><div id="empty">no incidents yet &mdash; inject a failure above</div></div>
+    </section>
+  </div>
+
+  <div class="logwrap">
+    <section class="card">
+      <h2>payments-api log <button id="btn-pause">pause</button></h2>
+      <pre id="log"></pre>
+    </section>
+  </div>
+</main>
+
+<script>
+const $ = (q) => document.querySelector(q);
+const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+let paused = false;
+const DEMO_MODE = location.hostname.endsWith("github.io") || new URLSearchParams(location.search).has("demo");
+let demoServerUp = true;
+let demoIncident = null;
+let demoLogs = [
+  "2026-08-23T10:00:00Z INFO payments-api heartbeat ok",
+  "2026-08-23T10:00:02Z INFO payments-api processed 184 requests",
+  "2026-08-23T10:00:04Z INFO payments-api heartbeat ok"
+];
+
+function demoNow() { return new Date().toISOString(); }
+function demoEvent(type, message) { return { ts: demoNow(), type, message }; }
+function demoRefreshIncident(mode) {
+  const details = {
+    db_pool: ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
+    oom: ["ERR_OOM_KILLED", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "low"],
+    disk: ["ERR_DISK_FULL", "The service cannot write transaction state because the application volume is full.", "docker restart demo-server", "medium"],
+    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high"]
+  }[mode] || ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
+  const detected = Date.now() / 1000;
+  demoServerUp = false;
+  demoIncident = {
+    id: "INC-DEMO01", error_code: details[0], status: "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: detected + 1.8, resolved_at: null,
+    diagnosis: details[1], fix: { command: details[2], risk: details[3] },
+    events: [
+      demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
+      demoEvent("retrieved", "Matched runbook by exact error code in ChromaDB"),
+      demoEvent("diagnosed", details[1]),
+      demoEvent("proposed", `Human approval required before applying: ${details[2]}`)
+    ]
+  };
+  demoLogs.push(`${demoNow()} ERROR ${details[0]} payments-api request failed`, `${demoNow()} ERROR service stopped; awaiting remediation`);
+  return { mode, status: "crashed" };
+}
+
+function demoDecision(approved) {
+  if (!demoIncident) throw new Error("No incident is waiting for approval");
+  const t = Date.now() / 1000;
+  demoIncident.events.push(demoEvent(approved ? "approved" : "rejected", approved ? "Engineer approved the proposed remediation" : "Engineer rejected the proposed remediation"));
+  if (approved && demoIncident.fix.risk !== "high") {
+    demoIncident.status = "resolved";
+    demoIncident.resolved_at = t + 4.2;
+    demoServerUp = true;
+    demoIncident.result = "Restart completed; health verification returned HTTP 200.";
+    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.command}`));
+    demoIncident.events.push(demoEvent("verified", "payments-api health endpoint returned 200 OK"));
+    demoLogs.push(`${demoNow()} INFO payments-api restarted by Sentinel`, `${demoNow()} INFO health verification passed`);
+  } else {
+    demoIncident.status = approved ? "escalated" : "rejected";
+    demoIncident.resolution = approved ? "High-risk change escalated for manual certificate renewal." : "No action taken; engineer retained control.";
+  }
+  return demoIncident;
+}
+
+async function api(path, opts) {
+  if (DEMO_MODE) {
+    const method = opts?.method || "GET";
+    if (path === "/api/status") return { server_up: demoServerUp };
+    if (path === "/api/incidents") return { incidents: demoIncident ? [demoIncident] : [] };
+    if (path.startsWith("/api/logs/tail")) return { lines: demoLogs.slice(-140) };
+    if (path === "/api/server/start") { demoServerUp = true; return { ok: true }; }
+    if (path === "/api/chaos" && method === "POST") return demoRefreshIncident(JSON.parse(opts.body).mode);
+    if (path.includes("/approve") && method === "POST") return demoDecision(true);
+    if (path.includes("/reject") && method === "POST") return demoDecision(false);
+  }
+  const r = await fetch(path, opts);
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ("HTTP " + r.status));
+  return r.json();
+}
+
+function fmtDelta(a, b) {
+  if (!a || !b) return null;
+  const ms = (b - a) * 1000;
+  return ms >= 1000 ? (ms / 1000).toFixed(1) + "s" : ms.toFixed(0) + "ms";
+}
+
+function card(i) {
+  const fix = i.fix || {};
+  const d2p = fmtDelta(i.detected_at, i.proposed_at);
+  const d2r = fmtDelta(i.detected_at, i.resolved_at);
+  const buttons = i.status === "waiting_approval" ? `
+    <div class="actions">
+      <button class="primary" data-act="approve" data-id="${i.id}">&#10003; Approve fix</button>
+      <button class="danger" data-act="reject" data-id="${i.id}">&#10007; Reject</button>
+    </div>` : "";
+  const events = (i.events || []).map(e =>
+    `<div class="ev">${esc(e.ts)} <b>${esc(e.type)}</b> ${esc(e.message)}</div>`).join("");
+  return `
+  <div class="inc">
+    <div class="inc-head">
+      <span class="inc-id">${esc(i.id)}</span>
+      <span class="code">${esc(i.error_code)}</span>
+      <span class="badge b-${esc(i.status)}">${esc(i.status)}</span>
+      ${i.severity ? `<span class="badge" style="color:var(--muted);border-color:var(--muted)">${esc(i.severity)}</span>` : ""}
+      <span class="timing" style="margin-left:auto">
+        ${d2p ? `detected&rarr;proposed <b>${d2p}</b>` : ""}
+        ${d2r ? ` &middot; resolved in <b>${d2r}</b>` : ""}
+      </span>
+    </div>
+    ${fix.command ? `<div class="fixline"><span class="prompt">$</span> ${esc(fix.command)} <span style="margin-left:auto;color:var(--muted)">risk: ${esc(fix.risk)}</span></div>` : ""}
+    ${i.diagnosis ? `<div class="diag">${esc(i.diagnosis)}</div>` : ""}
+    ${i.result || i.resolution ? `<div class="diag" style="color:var(--ok)">${esc(i.result || i.resolution)}</div>` : ""}
+    <details><summary>timeline (${(i.events || []).length})</summary>${events}</details>
+    ${buttons}
+  </div>`;
+}
+
+function renderLog(lines) {
+  const el = $("#log");
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+  el.innerHTML = lines.map(l => {
+    const cls = / ERROR | CRITICAL | FATAL /.test(" " + l + " ") ? "logline-err"
+              : / WARNING /.test(" " + l + " ") ? "logline-warn" : "";
+    return `<div class="${cls}">${esc(l)}</div>`;
+  }).join("");
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
+
+async function tick() {
+  try {
+    const st = await api("/api/status");
+    $("#server-dot").className = "dot " + (st.server_up ? "ok" : "bad");
+    $("#btn-start").style.display = st.server_up ? "none" : "";
+  } catch { $("#agent-dot").className = "dot bad"; }
+  if (paused) return;
+  try {
+    const data = await api("/api/incidents");
+    $("#inc-list").innerHTML = (data.incidents || []).length
+      ? data.incidents.map(card).join("")
+      : '<div id="empty">no incidents yet &mdash; inject a failure above</div>';
+  } catch {}
+  try {
+    const t = await api("/api/logs/tail?limit=140");
+    renderLog(t.lines || []);
+  } catch {}
+}
+
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  if (btn.dataset.mode) {
+    btn.disabled = true;
+    try { await api("/api/chaos", { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ mode: btn.dataset.mode }) }); }
+    catch (err) { alert("chaos injection failed: " + err.message); }
+    setTimeout(() => btn.disabled = false, 4000);
+  }
+  if (btn.id === "btn-start") {
+    btn.disabled = true;
+    try { await api("/api/server/start", { method: "POST" }); } catch (err) { alert(err.message); }
+    setTimeout(() => btn.disabled = false, 5000);
+  }
+  if (btn.id === "btn-pause") { paused = !paused; btn.textContent = paused ? "resume" : "pause"; }
+  if (btn.dataset.act) {
+    const id = btn.dataset.id;
+    btn.disabled = true;
+    try {
+      if (btn.dataset.act === "approve") {
+        await api(`/api/incidents/${id}/approve`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ approver: "dashboard" }) });
+      } else {
+        const reason = prompt("Reason for rejecting the fix (optional):") || "";
+        await api(`/api/incidents/${id}/reject`, { method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify({ approver: "dashboard", reason }) });
+      }
+    } catch (err) { alert(err.message); setTimeout(() => btn.disabled = false, 1000); }
+  }
+});
+
+setInterval(tick, 1500);
+tick();
+</script>
+</body>
+</html>

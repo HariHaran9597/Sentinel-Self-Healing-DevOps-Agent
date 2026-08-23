@@ -22,6 +22,7 @@
   .brand { font-size: 17px; font-weight: 700; letter-spacing: 2px; color: #fff; }
   .brand .pulse { color: var(--accent); }
   .sub { color: var(--muted); font-size: 12px; }
+  .demo-note { color: var(--warn); font-size: 11px; border: 1px solid var(--warn); border-radius: 5px; padding: 3px 7px; }
   #statusbar { margin-left: auto; display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   .dot { width: 9px; height: 9px; border-radius: 50%; display: inline-block; margin-right: 4px; background: var(--muted); }
   .dot.ok { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
@@ -78,6 +79,7 @@
 <header>
   <div class="brand"><span class="pulse">&#9679;</span> SENTINEL</div>
   <div class="sub">self-healing devops agent &middot; langgraph + chromadb + fastapi</div>
+  <div class="demo-note">interactive simulation</div>
   <div id="statusbar">
     <span><span id="agent-dot" class="dot ok"></span>agent</span>
     <span><span id="server-dot" class="dot bad"></span>payments-api</span>
@@ -116,8 +118,71 @@
 const $ = (q) => document.querySelector(q);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let paused = false;
+const DEMO_MODE = location.hostname.endsWith("github.io") || new URLSearchParams(location.search).has("demo");
+let demoServerUp = true;
+let demoIncident = null;
+let demoLogs = [
+  "2026-08-23T10:00:00Z INFO payments-api heartbeat ok",
+  "2026-08-23T10:00:02Z INFO payments-api processed 184 requests",
+  "2026-08-23T10:00:04Z INFO payments-api heartbeat ok"
+];
+
+function demoNow() { return new Date().toISOString(); }
+function demoEvent(type, message) { return { ts: demoNow(), type, message }; }
+function demoRefreshIncident(mode) {
+  const details = {
+    db_pool: ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
+    oom: ["ERR_OOM_KILLED", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "low"],
+    disk: ["ERR_DISK_FULL", "The service cannot write transaction state because the application volume is full.", "docker restart demo-server", "medium"],
+    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high"]
+  }[mode] || ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
+  const detected = Date.now() / 1000;
+  demoServerUp = false;
+  demoIncident = {
+    id: "INC-DEMO01", error_code: details[0], status: "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: detected + 1.8, resolved_at: null,
+    diagnosis: details[1], fix: { command: details[2], risk: details[3] },
+    events: [
+      demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
+      demoEvent("retrieved", "Matched runbook by exact error code in ChromaDB"),
+      demoEvent("diagnosed", details[1]),
+      demoEvent("proposed", `Human approval required before applying: ${details[2]}`)
+    ]
+  };
+  demoLogs.push(`${demoNow()} ERROR ${details[0]} payments-api request failed`, `${demoNow()} ERROR service stopped; awaiting remediation`);
+  return { mode, status: "crashed" };
+}
+
+function demoDecision(approved) {
+  if (!demoIncident) throw new Error("No incident is waiting for approval");
+  const t = Date.now() / 1000;
+  demoIncident.events.push(demoEvent(approved ? "approved" : "rejected", approved ? "Engineer approved the proposed remediation" : "Engineer rejected the proposed remediation"));
+  if (approved && demoIncident.fix.risk !== "high") {
+    demoIncident.status = "resolved";
+    demoIncident.resolved_at = t + 4.2;
+    demoServerUp = true;
+    demoIncident.result = "Restart completed; health verification returned HTTP 200.";
+    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.command}`));
+    demoIncident.events.push(demoEvent("verified", "payments-api health endpoint returned 200 OK"));
+    demoLogs.push(`${demoNow()} INFO payments-api restarted by Sentinel`, `${demoNow()} INFO health verification passed`);
+  } else {
+    demoIncident.status = approved ? "escalated" : "rejected";
+    demoIncident.resolution = approved ? "High-risk change escalated for manual certificate renewal." : "No action taken; engineer retained control.";
+  }
+  return demoIncident;
+}
 
 async function api(path, opts) {
+  if (DEMO_MODE) {
+    const method = opts?.method || "GET";
+    if (path === "/api/status") return { server_up: demoServerUp };
+    if (path === "/api/incidents") return { incidents: demoIncident ? [demoIncident] : [] };
+    if (path.startsWith("/api/logs/tail")) return { lines: demoLogs.slice(-140) };
+    if (path === "/api/server/start") { demoServerUp = true; return { ok: true }; }
+    if (path === "/api/chaos" && method === "POST") return demoRefreshIncident(JSON.parse(opts.body).mode);
+    if (path.includes("/approve") && method === "POST") return demoDecision(true);
+    if (path.includes("/reject") && method === "POST") return demoDecision(false);
+  }
   const r = await fetch(path, opts);
   if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || ("HTTP " + r.status));
   return r.json();

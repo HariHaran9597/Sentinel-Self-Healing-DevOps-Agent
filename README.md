@@ -17,6 +17,17 @@
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT">
 </p>
 
+<p align="center">
+  <a href="https://hariharan9597.github.io/Sentinel-Self-Healing-DevOps-Agent/">Live Interactive Demo</a>
+  &nbsp;|&nbsp;
+  <a href="#architecture">Architecture</a>
+  &nbsp;|&nbsp;
+  <a href="#the-self-healing-loop-in-action">Evidence</a>
+</p>
+
+> The public demo is a safe browser-based simulation of the incident loop. Run the Docker
+> quickstart below to exercise the real agent, Docker remediation, and human approval flow.
+
 ---
 
 ## Repository Index
