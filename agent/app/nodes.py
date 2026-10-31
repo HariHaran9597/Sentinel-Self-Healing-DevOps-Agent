@@ -95,11 +95,14 @@ def propose(state: dict) -> dict:
         "risk": runbook["risk"],
     }
     store.update(incident_id, fix=fix, status="waiting_approval", proposed_at=now)
-    store.event(
-        incident_id,
-        "fix_proposed",
-        f"proposed `{runbook['fix_command']}` (risk: {runbook['risk']}) -- awaiting engineer approval",
-    )
+    if runbook["fix_action"] == "manual":
+        message = (
+            f"manual action required: `{runbook['fix_command']}`; Sentinel will not execute it; "
+            "awaiting engineer acknowledgement"
+        )
+    else:
+        message = f"proposed `{runbook['fix_command']}` (risk: {runbook['risk']}) -- awaiting engineer approval"
+    store.event(incident_id, "fix_proposed", message)
     return {
         "fix_command": runbook["fix_command"],
         "fix_action": runbook["fix_action"],
@@ -120,11 +123,16 @@ def human_gate(state: dict) -> dict:
     incident_id = state["incident_id"]
 
     if settings.require_approval:
+        question = (
+            f"Acknowledge escalation for manual action `{state.get('fix_command')}`? Sentinel will not execute it."
+            if state.get("fix_action") == "manual"
+            else f"Apply fix `{state.get('fix_command')}`?"
+        )
         decision = interrupt({
             "type": "approval_request",
             "incident_id": incident_id,
             "error_code": state.get("error_code"),
-            "question": f"Apply fix `{state.get('fix_command')}`?",
+            "question": question,
             "fix_command": state.get("fix_command"),
             "risk": state.get("risk"),
             "runbook": state["runbook"]["rb_id"],
@@ -169,12 +177,12 @@ def execute_fix(state: dict) -> dict:
         now = time.time()
         store.update(
             incident_id,
-            status="resolved_manual",
+            status="escalated",
             resolved_at=now,
-            result="Acknowledged -- runbook prescribes manual remediation; no automated action taken.",
+            resolution="Runbook requires manual remediation; no automated action was taken.",
         )
-        store.event(incident_id, "closed", "acknowledged; manual remediation handed to on-call")
-        return {"status": "resolved_manual", "resolved_at": now,
+        store.event(incident_id, "escalated", "manual remediation handed to on-call")
+        return {"status": "escalated", "resolved_at": now,
                 "execution": {"ok": True, "action": "manual", "skipped": True}}
 
     store.update(incident_id, status="executing")
@@ -196,7 +204,7 @@ def execute_fix(state: dict) -> dict:
 
 
 def route_after_execute(state: dict) -> str:
-    if state.get("status") in {"failed", "resolved_manual"}:
+    if state.get("status") in {"failed", "resolved_manual", "escalated"}:
         return "end"
     return "verify"
 
@@ -223,7 +231,7 @@ def escalate(state: dict) -> dict:
     store = runtime.store
     incident_id = state["incident_id"]
     now = time.time()
-    message = f"No runbook matched {state.get('error_code')}; paged human on-call."
+    message = f"No runbook matched {state.get('error_code')}; manual on-call review is required."
     store.update(incident_id, status="escalated", resolved_at=now, resolution=message)
     store.event(incident_id, "escalated", message)
     return {"status": "escalated", "resolution": message}

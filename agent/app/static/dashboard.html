@@ -79,7 +79,7 @@
 <header>
   <div class="brand"><span class="pulse">&#9679;</span> SENTINEL</div>
   <div class="sub">self-healing devops agent &middot; langgraph + chromadb + fastapi</div>
-  <div class="demo-note">interactive simulation</div>
+  <div class="demo-note" id="mode-note">interactive simulation · no backend</div>
   <div id="statusbar">
     <span><span id="agent-dot" class="dot ok"></span>agent</span>
     <span><span id="server-dot" class="dot bad"></span>payments-api</span>
@@ -119,29 +119,30 @@ const $ = (q) => document.querySelector(q);
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 let paused = false;
 const DEMO_MODE = location.hostname.endsWith("github.io") || new URLSearchParams(location.search).has("demo");
+document.querySelector("#mode-note").textContent = DEMO_MODE ? "browser simulation · no backend" : "local Docker demo";
 let demoServerUp = true;
 let demoIncident = null;
 let demoLogs = [
-  "2026-08-23T10:00:00Z INFO payments-api heartbeat ok",
-  "2026-08-23T10:00:02Z INFO payments-api processed 184 requests",
-  "2026-08-23T10:00:04Z INFO payments-api heartbeat ok"
+  `${new Date().toISOString()} INFO payments-api heartbeat ok`,
+  `${new Date().toISOString()} INFO payments-api processed 184 requests`,
+  `${new Date().toISOString()} INFO payments-api heartbeat ok`
 ];
 
 function demoNow() { return new Date().toISOString(); }
 function demoEvent(type, message) { return { ts: demoNow(), type, message }; }
 function demoRefreshIncident(mode) {
   const details = {
-    db_pool: ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
-    oom: ["ERR_OOM_KILLED", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "low"],
+    db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
+    oom: ["ERR_OOM", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "medium"],
     disk: ["ERR_DISK_FULL", "The service cannot write transaction state because the application volume is full.", "docker restart demo-server", "medium"],
     ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high"]
-  }[mode] || ["ERR_DB_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
+  }[mode] || ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
   const detected = Date.now() / 1000;
   demoServerUp = false;
   demoIncident = {
     id: "INC-DEMO01", error_code: details[0], status: "waiting_approval", severity: details[3],
     detected_at: detected, proposed_at: detected + 1.8, resolved_at: null,
-    diagnosis: details[1], fix: { command: details[2], risk: details[3] },
+    diagnosis: details[1], fix: { command: details[2], risk: details[3], action: mode === "ssl" ? "manual" : "restart_container" },
     events: [
       demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
       demoEvent("retrieved", "Matched runbook by exact error code in ChromaDB"),
@@ -196,11 +197,12 @@ function fmtDelta(a, b) {
 
 function card(i) {
   const fix = i.fix || {};
+  const actionLabel = fix.action === "manual" ? "Acknowledge escalation" : "Approve fix";
   const d2p = fmtDelta(i.detected_at, i.proposed_at);
   const d2r = fmtDelta(i.detected_at, i.resolved_at);
   const buttons = i.status === "waiting_approval" ? `
     <div class="actions">
-      <button class="primary" data-act="approve" data-id="${i.id}">&#10003; Approve fix</button>
+      <button class="primary" data-act="approve" data-id="${i.id}">&#10003; ${actionLabel}</button>
       <button class="danger" data-act="reject" data-id="${i.id}">&#10007; Reject</button>
     </div>` : "";
   const events = (i.events || []).map(e =>

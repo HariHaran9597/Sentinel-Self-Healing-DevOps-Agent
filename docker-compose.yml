@@ -4,9 +4,11 @@ services:
   demo-server:
     build: ./demo-server
     container_name: demo-server
+    labels:
+      com.hariharan.sentinel.managed: "true"
     restart: "no"           # when it crashes it stays down -- Sentinel brings it back
     ports:
-      - "8080:8080"
+      - "127.0.0.1:${SENTINEL_DEMO_PORT:-18080}:8080"
     volumes:
       - applogs:/var/log/app
     environment:
@@ -17,21 +19,25 @@ services:
     container_name: sentinel-agent
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "127.0.0.1:${SENTINEL_AGENT_PORT:-18000}:8000"
     volumes:
       - applogs:/var/log/app            # watch the same log the service writes
       - chroma_data:/data/chroma        # persistent vector store
+      - sentinel_data:/data             # durable incidents and audit timeline
       - /var/run/docker.sock:/var/run/docker.sock   # remediates via the Docker API
     environment:
       LOG_PATH: /var/log/app/app.log
       RUNBOOKS_DIR: /app/runbooks
       CHROMA_PATH: /data/chroma
+      DATABASE_PATH: /data/sentinel.sqlite3
       EXECUTOR_MODE: docker
       TARGET_CONTAINER: demo-server
       DEMO_SERVER_URL: http://demo-server:8080
       TARGET_HEALTH_URL: http://demo-server:8080/health
       REQUIRE_APPROVAL: "true"
+      COOLDOWN_SECONDS: ${COOLDOWN_SECONDS:-30}
       # Optional LLM-enriched diagnosis (agent works without it):
+      LLM_DIAGNOSIS_ENABLED: ${LLM_DIAGNOSIS_ENABLED:-false}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
       OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
@@ -41,3 +47,4 @@ services:
 volumes:
   applogs:
   chroma_data:
+  sentinel_data:

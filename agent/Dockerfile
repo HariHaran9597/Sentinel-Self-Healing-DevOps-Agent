@@ -6,12 +6,12 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY app ./app
-COPY runbooks ./runbooks
-
 # Pre-download the default embedding model so the first incident never pays
 # the cold-start cost (keeps detection -> proposal well under 10s).
 RUN python -c "from chromadb.utils.embedding_functions import DefaultEmbeddingFunction; DefaultEmbeddingFunction()(['warm-up'])"
+
+COPY app ./app
+COPY runbooks ./runbooks
 
 EXPOSE 8000
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import sys
 import time
+from types import SimpleNamespace
 from pathlib import Path
 
 import pytest
@@ -16,9 +17,11 @@ sys.path.insert(0, str(AGENT_DIR))
 from app import runtime  # noqa: E402
 from app.config import Settings  # noqa: E402
 from app.graph import build_graph  # noqa: E402
+from app import llm  # noqa: E402
 from app.monitor import LogMonitor  # noqa: E402
 from app.runbooks import parse_runbook  # noqa: E402
 from app.store import IncidentStore  # noqa: E402
+from app.executor import _managed_container  # noqa: E402
 
 RUNBOOK_SAMPLE = """---
 id: RB-999
@@ -91,6 +94,30 @@ def test_store_lifecycle_and_iso_twins():
     assert [r["id"] for r in store.list()] == ["INC-2", "INC-1"]  # newest first
 
 
+def test_store_survives_agent_restart(tmp_path):
+    path = tmp_path / "incidents.sqlite3"
+    first = IncidentStore(str(path))
+    first.create("INC-PERSIST", error_code="ERR_A")
+    first.event("INC-PERSIST", "detected", "reproducible test event")
+    first.update("INC-PERSIST", status="waiting_approval")
+    first.close()
+
+    restarted = IncidentStore(str(path))
+    record = restarted.get("INC-PERSIST")
+    assert record["status"] == "waiting_approval"
+    assert record["events"][0]["message"] == "reproducible test event"
+    restarted.close()
+
+
+def test_executor_rejects_unmanaged_container(wired_runtime):
+    class Containers:
+        def get(self, name):
+            return SimpleNamespace(labels={})
+
+    with pytest.raises(PermissionError, match="lacks Sentinel demo ownership label"):
+        _managed_container(SimpleNamespace(containers=Containers()))
+
+
 # ---------------------------------------------------------------- graph (dry-run)
 
 class _StubRunbooks:
@@ -111,6 +138,7 @@ def wired_runtime(monkeypatch, tmp_path):
     runtime.settings.require_approval = True
     runtime.settings.executor_mode = "dry-run"
     runtime.settings.openai_api_key = ""
+    runtime.settings.llm_diagnosis_enabled = False
     runtime.store = IncidentStore()
     runtime.runbooks = _StubRunbooks()
 
@@ -118,6 +146,15 @@ def wired_runtime(monkeypatch, tmp_path):
     monkeypatch.setattr(executor, "wait_healthy", lambda timeout: (True, "health check 200 OK (stub)"))
     yield runtime
     runtime.settings = runtime.store = runtime.runbooks = None
+
+
+def test_llm_is_disabled_unless_explicitly_enabled(wired_runtime, monkeypatch):
+    runtime.settings.openai_api_key = "test-key"
+    calls = []
+    monkeypatch.setattr(llm.httpx, "post", lambda *args, **kwargs: calls.append(args))
+    assert llm.llm_available() is False
+    assert llm.llm_diagnose({"raw_log": []}) is None
+    assert calls == []
 
 
 def test_graph_pauses_at_hitl_and_resolves_after_approval(wired_runtime):
@@ -167,3 +204,26 @@ def test_graph_escalates_unknown_error(wired_runtime, monkeypatch):
         "error_code": "ERR_NOVEL", "raw_log": [_fake_error_line("ERR_NOVEL")],
     })
     assert runtime.store.get("INC-T3")["status"] == "escalated"
+
+
+def test_manual_runbook_is_escalated_not_reported_as_recovered(wired_runtime):
+    class ManualRunbook(_StubRunbooks):
+        def query(self, error_code, context=""):
+            result = super().query(error_code, context)
+            result.update(fix_action="manual", fix_command="renew certificate", risk="high")
+            return result
+
+    runtime.runbooks = ManualRunbook()
+    runtime.store.create("INC-T4", error_code="ERR_TLS_CERT_EXPIRED")
+    runtime.runner.bind(build_graph())
+    runtime.runner._invoke("INC-T4", {
+        "incident_id": "INC-T4", "detected_at": time.time(),
+        "error_code": "ERR_TLS_CERT_EXPIRED", "raw_log": [_fake_error_line("ERR_TLS_CERT_EXPIRED")],
+    })
+    assert "Sentinel will not execute it" in runtime.store.get("INC-T4")["events"][-1]["message"]
+    from langgraph.types import Command
+    runtime.runner._invoke("INC-T4", Command(resume={"approved": True, "approver": "test"}))
+    record = runtime.store.get("INC-T4")
+    assert record["status"] == "escalated"
+    assert record["result"] is None
+    assert "manual remediation" in record["resolution"]

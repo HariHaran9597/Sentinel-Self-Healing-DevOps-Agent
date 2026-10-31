@@ -14,6 +14,7 @@
   <img src="https://img.shields.io/badge/FastAPI-interface-009688?logo=fastapi&logoColor=white" alt="FastAPI">
   <img src="https://img.shields.io/badge/Docker-deploy-2496ED?logo=docker&logoColor=white" alt="Docker">
   <img src="https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white" alt="Python">
+  <img src="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent/actions/workflows/ci.yml/badge.svg?branch=main" alt="Sentinel CI">
   <img src="https://img.shields.io/badge/License-MIT-green" alt="MIT">
 </p>
 
@@ -43,18 +44,38 @@
 
 | Step | What happens | Timing |
 |---|---|---|
-| 1. **Crash** | Demo `payments-api` crashes with a production-style error signature | — |
-| 2. **Detect** | Monitor tails the log, groups error lines, extracts `ERR_*` code | ~1–2 s |
-| 3. **Retrieve** | LangGraph queries ChromaDB — exact code match first, semantic fallback | < 1 s |
-| 4. **Diagnose** | Root-cause analysis (runbook template, or LLM-enriched if API key set) | < 0.5 s |
-| 5. **Propose** | Graph pauses at `interrupt()` — asks engineer: *"Apply `docker restart demo-server`?"* | **< 5 s total** |
+| 1. **Crash** | Demo `payments-api` crashes with a production-style error signature | Controlled injection |
+| 2. **Detect** | Monitor tails the log, groups error lines, extracts `ERR_*` code | Measured in recorded run |
+| 3. **Retrieve** | LangGraph queries ChromaDB — exact code match first, semantic fallback | Measured in recorded run |
+| 4. **Diagnose** | Root-cause analysis (runbook template, or opt-in LLM-enriched diagnosis) | Measured in recorded run |
+| 5. **Propose** | Graph pauses at `interrupt()` — asks engineer: *"Apply `docker restart demo-server`?"* | Measured in recorded run |
 | 6. **Approve** | Human clicks **Approve** on the dashboard (or via API) | — |
-| 7. **Execute** | Agent runs whitelisted remediation through the Docker API | ~2 s |
-| 8. **Verify** | Health endpoint polled — incident closed only on `200 OK` | ~2 s |
+| 7. **Execute** | Agent runs whitelisted remediation through the Docker API | Measured in recorded run |
+| 8. **Verify** | Health endpoint polled — incident closed only on `200 OK` | Measured in recorded run |
 
-<p align="center">
-  <b>Crash → detection → fix proposed in &lt; 5 seconds. Full close in &lt; 30 seconds.</b>
-</p>
+Timing varies by machine; these measurements are not an SLA.
+
+## Recorded fault evaluation
+
+The reproducible evaluation injects each supported fault into the disposable Compose demo service, approves proposed actions through the HTTP API, and verifies health after remediation. TLS expiry is expected to escalate because rotating credentials requires a human.
+
+Run it locally after starting the stack:
+
+```powershell
+$env:COOLDOWN_SECONDS = "0"
+docker compose up --build -d --force-recreate agent
+python scripts/evaluate_sentinel.py --runs-per-mode 5
+Remove-Item Env:COOLDOWN_SECONDS
+docker compose up -d --force-recreate agent
+```
+
+The checked-in [evaluation record](docs/results/sentinel-chaos-evaluation.json) includes the run date, per-trial outcomes, median and p95 detection-to-terminal time, and limitations. It measures this controlled lab on one laptop; it is not production incident evidence or a service-level guarantee.
+
+## Resume evidence
+
+> Built a Docker Compose self-healing operations agent with log-based incident detection, runbook retrieval, human-approved allowlisted remediation, durable incident checkpoints, and post-action health verification. In 20 sequential local chaos trials across four fault classes, all 20 reached the expected safe outcome (15 automatic recoveries, 5 certificate escalations, 0 false recovery claims); median detection-to-terminal time was 1.92 s (p95 3.48 s).
+
+Use this result with its scope attached: it is a controlled lab evaluation on one laptop, with repeated trials that are not statistically independent. It does not establish production reliability, customer availability, or business savings.
 
 ## Dashboard walkthrough
 
@@ -92,14 +113,14 @@ flowchart LR
 ```mermaid
 flowchart TD
     S(["💥 crash detected"]) --> classify --> retrieve
-    retrieve -->|"no match"| escalate --> E(["📡 END: paged on-call"])
+    retrieve -->|"no match"| escalate --> E(["📡 END: manual on-call review"])
     retrieve -->|"runbook found"| diagnose --> propose
     propose --> gate{{"🧑‍💻 human approval"}}
     gate -->|"✅ approved"| execute --> verify --> E2(["✅ END: resolved"])
     gate -->|"❌ rejected"| E3(["🛑 END: no action taken"])
 ```
 
-`human_gate` blocks on `langgraph.types.interrupt()` backed by an in-memory checkpointer; the FastAPI approve/reject endpoints resume the same thread with `Command(resume=...)`.
+`human_gate` blocks on `langgraph.types.interrupt()` backed by a SQLite checkpointer; the FastAPI approve/reject endpoints resume the same thread with `Command(resume=...)`, including after the agent container restarts.
 
 ## Quickstart
 
@@ -111,9 +132,13 @@ docker compose up --build
 
 | Endpoint | URL |
 |---|---|
-| **Dashboard** | http://localhost:8000 |
-| **Agent API** (FastAPI docs) | http://localhost:8000/docs |
-| **Demo server** (the crashable victim) | http://localhost:8080/health |
+| **Dashboard** | http://localhost:18000 |
+| **Agent API** (FastAPI docs) | http://localhost:18000/docs |
+| **Demo server** (the crashable victim) | http://localhost:18080/health |
+
+The host ports bind to `127.0.0.1` and default to `18000`/`18080` to avoid common local port conflicts. Override them with `SENTINEL_AGENT_PORT` and `SENTINEL_DEMO_PORT` if needed. Optional LLM diagnosis is disabled by default; enable it explicitly with `LLM_DIAGNOSIS_ENABLED=true` and an `OPENAI_API_KEY`.
+
+Incident timelines and pending LangGraph approvals are stored in the `sentinel_data` Docker volume and survive an agent restart. The Docker executor refuses to act on containers without the `com.hariharan.sentinel.managed=true` label. The Docker socket still grants the agent container broad access to the local Docker daemon, so run this lab only on a machine you control and never point it at production workloads.
 
 ### 90-second scripted demo
 
@@ -122,10 +147,10 @@ docker compose up --build
 docker compose up --build
 
 # terminal 2 — full loop: crash → detect → propose → approve → execute → verify
-python scripts/demo.py --mode db_pool --yes
+python scripts/demo.py --base http://127.0.0.1:18000 --mode db_pool --yes
 
 # the engineer says NO (human-in-the-loop proof)
-python scripts/demo.py --mode ssl --reject
+python scripts/demo.py --base http://127.0.0.1:18000 --mode ssl --reject
 ```
 
 ## API
@@ -197,7 +222,7 @@ python scripts/demo.py --mode db_pool --yes
 pytest agent/tests -q
 ```
 
-Covers runbook parsing, monitor grouping/cooldown, incident store, and the full LangGraph flow in dry-run mode — including pause-at-interrupt → resume-approve → resolved, the reject path, and escalation on unknown errors.
+Covers runbook parsing, monitor grouping/cooldown, durable incident storage, managed-container guard, LLM opt-in, and the LangGraph approval, rejection, safe escalation, and recovery paths.
 
 
 ## License

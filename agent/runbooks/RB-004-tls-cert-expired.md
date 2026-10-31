@@ -22,7 +22,8 @@ risk: high
 ## Resolution
 This fix is intentionally manual: certificates are secrets, and automated
 renewal from a self-healing agent would need vault access we have not granted it.
-On-call should run:
+Sentinel escalates this incident and leaves it unresolved until an operator
+renews the certificate and verifies the upstream handshake. On-call should run:
     certbot renew --deploy-hook "systemctl reload nginx"
 then verify the handshake. Add automated renewal + 30-day expiry alerts afterward.
 

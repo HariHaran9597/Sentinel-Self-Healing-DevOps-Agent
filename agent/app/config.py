@@ -23,6 +23,7 @@ class Settings:
         # Phase 2 -- the brain
         self.runbooks_dir = _env_path("RUNBOOKS_DIR", AGENT_DIR / "runbooks")
         self.chroma_path = _env_path("CHROMA_PATH", AGENT_DIR / "data" / "chroma")
+        self.database_path = _env_path("DATABASE_PATH", PROJECT_DIR / "data" / "sentinel.sqlite3")
 
         # Remediation target
         self.target_container = os.environ.get("TARGET_CONTAINER", "demo-server")
@@ -44,5 +45,8 @@ class Settings:
 
         # Optional LLM-enriched diagnosis (any OpenAI-compatible endpoint)
         self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        self.llm_diagnosis_enabled = os.environ.get("LLM_DIAGNOSIS_ENABLED", "false").lower() in {
+            "1", "true", "yes", "on",
+        }
         self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         self.openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")

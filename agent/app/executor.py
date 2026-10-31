@@ -23,6 +23,14 @@ def _docker_client():
     return docker.from_env()
 
 
+def _managed_container(client):
+    """Refuse remediation unless the target carries Sentinel's demo label."""
+    container = client.containers.get(runtime.settings.target_container)
+    if container.labels.get("com.hariharan.sentinel.managed") != "true":
+        raise PermissionError("refusing Docker action: target lacks Sentinel demo ownership label")
+    return container
+
+
 def _mode() -> str:
     settings = runtime.settings
     if settings.executor_mode in {"docker", "local", "dry-run"}:
@@ -58,7 +66,7 @@ def start_target() -> dict:
         if mode == "dry-run":
             return {"ok": True, "detail": f"[dry-run] would start {settings.target_container}"}
         if mode == "docker":
-            container = _docker_client().containers.get(settings.target_container)
+            container = _managed_container(_docker_client())
             container.start()
             return {"ok": True, "detail": f"container {settings.target_container} started"}
         return _spawn_local()
@@ -73,7 +81,7 @@ def restart_target() -> dict:
         if mode == "dry-run":
             return {"ok": True, "detail": f"[dry-run] would restart {settings.target_container}"}
         if mode == "docker":
-            container = _docker_client().containers.get(settings.target_container)
+            container = _managed_container(_docker_client())
             container.restart(timeout=15)
             return {"ok": True, "detail": f"container {settings.target_container} restarted (state={container.status})"}
         return _spawn_local()

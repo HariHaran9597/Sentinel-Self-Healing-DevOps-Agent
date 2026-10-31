@@ -8,7 +8,7 @@ Endpoints:
   GET  /api/incidents/{id}            single incident with timeline
   POST /api/incidents/{id}/approve    HITL: approve the proposed fix
   POST /api/incidents/{id}/reject     HITL: reject the proposed fix
-  POST /api/chaos                     proxy a failure injection into the demo server
+  POST /api/chaos                     inject a bounded fault into the local demo server
   POST /api/server/start              bring the demo server back up
   GET  /api/logs/tail                 tail of the watched service log
 """
@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -80,12 +81,19 @@ async def lifespan(_: FastAPI):
     runtime.settings = settings
     settings.log_path.parent.mkdir(parents=True, exist_ok=True)
     settings.chroma_path.mkdir(parents=True, exist_ok=True)
+    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
 
-    runtime.store = IncidentStore()
+    runtime.store = IncidentStore(str(settings.database_path))
     # Seeding here also warms the embedding model, so the first real incident
     # never pays the cold-start cost (keeps detection -> proposal < 10s).
     runtime.runbooks = RunbookStore(settings.runbooks_dir, settings.chroma_path)
-    runtime.runner.bind(build_graph())
+    from langgraph.checkpoint.sqlite import SqliteSaver
+    runtime.checkpointer_connection = sqlite3.connect(
+        str(settings.database_path), check_same_thread=False
+    )
+    checkpointer = SqliteSaver(runtime.checkpointer_connection)
+    checkpointer.setup()
+    runtime.runner.bind(build_graph(checkpointer))
 
     monitor = LogMonitor(
         str(settings.log_path),
@@ -104,6 +112,9 @@ async def lifespan(_: FastAPI):
     finally:
         monitor_task.cancel()
         _.state.ready = False
+        runtime.store.close()
+        runtime.checkpointer_connection.close()
+        runtime.checkpointer_connection = None
 
 
 app = FastAPI(title="Sentinel -- Self-Healing DevOps Agent", version="1.0.0", lifespan=lifespan)

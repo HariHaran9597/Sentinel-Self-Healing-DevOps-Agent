@@ -20,7 +20,7 @@ from . import nodes
 from .state import AgentState
 
 
-def build_graph():
+def build_graph(checkpointer=None):
     builder = StateGraph(AgentState)
 
     builder.add_node("classify", nodes.classify)
@@ -49,4 +49,4 @@ def build_graph():
     builder.add_edge("escalate", END)
 
     # The checkpointer persists state across the interrupt() pause.
-    return builder.compile(checkpointer=InMemorySaver())
+    return builder.compile(checkpointer=checkpointer or InMemorySaver())

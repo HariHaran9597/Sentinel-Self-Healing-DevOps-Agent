@@ -12,12 +12,12 @@ from . import runtime
 
 
 def llm_available() -> bool:
-    return bool(runtime.settings.openai_api_key)
+    return bool(runtime.settings.llm_diagnosis_enabled and runtime.settings.openai_api_key)
 
 
 def llm_diagnose(state: dict) -> str | None:
     settings = runtime.settings
-    if not settings.openai_api_key:
+    if not settings.llm_diagnosis_enabled or not settings.openai_api_key:
         return None
     runbook = state.get("runbook") or {}
     user_prompt = (
