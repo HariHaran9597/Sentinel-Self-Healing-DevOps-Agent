@@ -11,7 +11,8 @@ import time
 from langgraph.types import interrupt
 
 from . import runtime
-from .llm import llm_diagnose
+from .llm import llm_assess, llm_available
+from .runbooks import SEMANTIC_MAX_DISTANCE
 
 log = logging.getLogger("sentinel.graph")
 
@@ -38,9 +39,17 @@ def retrieve(state: dict) -> dict:
     store, runbooks = runtime.store, runtime.runbooks
     incident_id = state["incident_id"]
     context = " ".join(state.get("raw_log", [])[:3])[:600]
-    match = runbooks.query(state.get("error_code", ""), context)
+    code = state.get("error_code", "")
+    if hasattr(runbooks, "candidates"):
+        candidates = runbooks.candidates(code, context)
+        match = next((candidate for candidate in candidates if candidate["exact_match"]), None)
+        if match is None and candidates and candidates[0]["distance"] <= SEMANTIC_MAX_DISTANCE:
+            match = candidates[0]
+    else:
+        match = runbooks.query(code, context)
+        candidates = [match] if match else []
     if not match:
-        return {}
+        return {"runbook_candidates": candidates}
     store.update(
         incident_id,
         runbook={
@@ -57,31 +66,68 @@ def retrieve(state: dict) -> dict:
         f"matched {match['rb_id']} -- {match['title']} "
         f"({'exact' if match['exact_match'] else 'semantic'} match, distance {match['distance']:.3f})",
     )
-    return {"runbook": match}
+    return {"runbook": match, "runbook_candidates": candidates}
 
 
 def route_after_retrieve(state: dict) -> str:
-    return "diagnose" if state.get("runbook") else "escalate"
+    if state.get("runbook"):
+        return "diagnose"
+    if llm_available() and state.get("runbook_candidates"):
+        return "diagnose"
+    return "escalate"
 
 
 def diagnose(state: dict) -> dict:
     store = runtime.store
     incident_id = state["incident_id"]
-    runbook = state["runbook"]
+    runbook = state.get("runbook")
+    available_candidates = state.get("runbook_candidates") or ([runbook] if runbook else [])
+    # An exact signature is authoritative: ask Groq for a grounded explanation
+    # of that runbook, not an alternate action that could contradict the card.
+    candidates = ([runbook] if runbook and runbook.get("exact_match") else available_candidates)
+    assessment = llm_assess(state, candidates) if llm_available() else None
+    if not runbook and assessment and not assessment.get("abstain"):
+        selected = assessment.get("selected_runbook_id")
+        runbook = next((candidate for candidate in candidates if candidate["rb_id"] == selected), None)
+        if runbook:
+            store.update(
+                incident_id,
+                runbook={
+                    "id": runbook["rb_id"], "title": runbook["title"],
+                    "severity": runbook["severity"], "exact_match": False,
+                },
+                severity=runbook["severity"],
+            )
+            store.event(incident_id, "llm_runbook_selected", f"Groq selected candidate {runbook['rb_id']} with cited evidence")
 
-    template = (
-        f"{runbook['severity']} -- {runbook['title']}. {runbook['summary']} "
-        f"Resolution: {runbook['resolution']}"
-    )
-    enriched = llm_diagnose(state)
-    diagnosis = enriched or template
+    if assessment:
+        store.update(incident_id, llm_analysis=assessment)
+        store.event(
+            incident_id, "llm_second_opinion",
+            f"Groq analysis completed ({assessment['latency_ms']:.0f} ms; recommendation={assessment['recommended_action']})",
+        )
+
+    if assessment and assessment.get("recommended_action") == "escalate":
+        diagnosis = assessment["hypothesis"]
+        store.update(incident_id, diagnosis=diagnosis)
+        store.event(incident_id, "diagnosed", "Groq recommended escalation; no action proposed")
+        return {"diagnosis": diagnosis, "llm_analysis": assessment, "llm_escalate": True}
+
+    if not runbook:
+        diagnosis = assessment.get("hypothesis", "No runbook candidate met the deterministic match threshold.") if assessment else "No safe runbook match; escalating."
+        store.update(incident_id, diagnosis=diagnosis)
+        store.event(incident_id, "diagnosed", "no candidate passed the evidence and action validation")
+        return {"diagnosis": diagnosis, "llm_analysis": assessment, "llm_escalate": True}
+
+    template = f"{runbook['severity']} -- {runbook['title']}. {runbook['summary']} Resolution: {runbook['resolution']}"
+    diagnosis = (assessment.get("hypothesis") if assessment else None) or template
     store.update(incident_id, diagnosis=diagnosis)
-    store.event(
-        incident_id,
-        "diagnosed",
-        "root-cause analysis complete" + (" (LLM-enriched)" if enriched else " (runbook template)"),
-    )
-    return {"diagnosis": diagnosis}
+    store.event(incident_id, "diagnosed", "evidence-backed Groq diagnosis" if assessment else "runbook template diagnosis")
+    return {"diagnosis": diagnosis, "llm_analysis": assessment, "runbook": runbook, "llm_escalate": False}
+
+
+def route_after_diagnose(state: dict) -> str:
+    return "escalate" if state.get("llm_escalate") else "propose"
 
 
 def propose(state: dict) -> dict:

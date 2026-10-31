@@ -7,6 +7,7 @@ matches the error code against its runbook library and proposes the fix.
 from __future__ import annotations
 
 import asyncio
+import httpx
 import os
 import random
 import threading
@@ -17,10 +18,13 @@ from datetime import datetime, timezone
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 
+from state import failure_reason, load_state, reset_state, save_state, KNOWN_GOOD_RELEASE
+
 LOG_PATH = os.environ.get("LOG_PATH", "./logs/app.log")
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
 CHAOS_DELAY = float(os.environ.get("CHAOS_DELAY", "2.0"))
+DEPENDENCY_URL = os.environ.get("DEPENDENCY_URL", "http://sentinel-dependency:8090")
 STARTED_AT = time.time()
 
 os.makedirs(os.path.dirname(os.path.abspath(LOG_PATH)) or ".", exist_ok=True)
@@ -34,6 +38,7 @@ def log(level: str, component: str, message: str) -> None:
 
 class ChaosRequest(BaseModel):
     mode: str = "db_pool"
+    seed: int = 0
 
 
 def _crash_db_pool() -> None:
@@ -50,13 +55,6 @@ def _crash_oom() -> None:
     os._exit(137)
 
 
-def _crash_disk() -> None:
-    log("ERROR", "audit", "Failed to flush audit segment: OSError(28, 'No space left on device'): '/var/log/app/audit-seg-0142.log'")
-    log("ERROR", "reqlog", "Request logging degraded: disk full on /var/log/app")
-    log("FATAL", "supervisor", "Cannot persist required transaction state. code=ERR_DISK_FULL")
-    os._exit(70)
-
-
 def _crash_ssl() -> None:
     log("ERROR", "tls", "Handshake with pay-gateway.internal:443 failed: SSLError('certificate verify failed', 'certificate has expired')")
     log("ERROR", "payments", "Upstream payment gateway rejected: 100% of TLS connections failing (sentinel-ca)")
@@ -67,9 +65,39 @@ def _crash_ssl() -> None:
 CRASH_MODES = {
     "db_pool": _crash_db_pool,
     "oom": _crash_oom,
-    "disk": _crash_disk,
     "ssl": _crash_ssl,
 }
+
+PERSISTENT_MODES = {"bad_config", "bad_release", "unknown"}
+CHAOS_MODES = set(CRASH_MODES) | PERSISTENT_MODES
+
+
+def _inject_noise(seed: int) -> None:
+    rng = random.Random(seed)
+    for index in range(rng.randint(3, 7)):
+        route = rng.choice(("/payments/status", "/payments/checkout", "/payments/refund"))
+        log("INFO", "access", f"GET {route} 200 {rng.uniform(4, 80):.1f}ms request_id=seed-{seed}-{index}")
+
+
+def _inject_persistent(mode: str, seed: int) -> dict:
+    state = load_state()
+    if mode == "bad_config":
+        state["config_valid"] = False
+        state["config_error"] = "invalid retry policy"
+        save_state(state)
+        code = "ERR_CONFIG_INVALID"
+        detail = f"config validation rejected retry policy (seed={seed})"
+    elif mode == "bad_release":
+        state["current_release"] = "2.5.0-bad"
+        save_state(state)
+        code = "ERR_BAD_RELEASE"
+        detail = f"release 2.5.0-bad failed startup validation; prior={state['previous_release']} (seed={seed})"
+    else:
+        code = "ERR_UNKNOWN_FAULT"
+        detail = f"unclassified canary warning with no user-impact signal (seed={seed})"
+    _inject_noise(seed)
+    log("ERROR", "fault-injector", f"{detail}; code={code}")
+    return {"ok": True, "mode": mode, "error_code": code, "injected_at": time.time(), "seed": seed}
 
 
 async def _heartbeat() -> None:
@@ -98,18 +126,49 @@ app = FastAPI(title="payments-api", version="2.4.1", lifespan=lifespan)
 
 @app.get("/health")
 def health() -> dict:
+    reason = failure_reason()
+    if reason:
+        raise HTTPException(503, reason)
+    try:
+        dependency = httpx.get(f"{DEPENDENCY_URL}/health", timeout=0.5)
+        dependency.raise_for_status()
+    except Exception:
+        raise HTTPException(503, "ledger dependency is unavailable")
     return {"service": "payments-api", "status": "ok", "uptime_s": round(time.time() - STARTED_AT, 1)}
+
+
+@app.get("/live")
+def live() -> dict:
+    return {"service": "payments-api", "process": "up"}
+
+
+@app.get("/payments/status")
+def independent_business_probe() -> dict:
+    """Separate canary-style endpoint used by the external evaluation driver."""
+    status = health()
+    state = load_state()
+    return {"service": status["service"], "operational": True, "release": state["current_release"]}
+
+
+@app.post("/admin/reset")
+def reset_demo_state() -> dict:
+    state = reset_state()
+    log("INFO", "evaluation", "scenario state reset to known-good baseline")
+    return {"ok": True, "state": state}
 
 
 @app.post("/chaos")
 def chaos(req: ChaosRequest) -> dict:
-    if req.mode not in CRASH_MODES:
-        raise HTTPException(400, f"unknown mode {req.mode!r}; expected one of {sorted(CRASH_MODES)}")
+    if req.mode not in CHAOS_MODES:
+        raise HTTPException(400, f"unknown mode {req.mode!r}; expected one of {sorted(CHAOS_MODES)}")
+    if req.mode in PERSISTENT_MODES:
+        return _inject_persistent(req.mode, req.seed)
+    _inject_noise(req.seed)
     timer = threading.Timer(CHAOS_DELAY, CRASH_MODES[req.mode])
     timer.daemon = True
     timer.start()
-    log("WARNING", "chaos", f"failure injection requested: mode={req.mode} (crashing in {CHAOS_DELAY}s)")
-    return {"ok": True, "mode": req.mode, "crashing_in_s": CHAOS_DELAY}
+    log("WARNING", "chaos", f"failure injection requested: mode={req.mode} (crashing in {CHAOS_DELAY}s; seed={req.seed})")
+    return {"ok": True, "mode": req.mode, "injected_at": time.time(), "seed": req.seed, "crashing_in_s": CHAOS_DELAY}
 
 
 if __name__ == "__main__":

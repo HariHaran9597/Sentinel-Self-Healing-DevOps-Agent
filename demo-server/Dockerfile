@@ -6,7 +6,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
-COPY server.py .
+COPY server.py state.py ./
 RUN mkdir -p /var/log/app
 
 ENV LOG_PATH=/var/log/app/app.log HOST=0.0.0.0 PORT=8080

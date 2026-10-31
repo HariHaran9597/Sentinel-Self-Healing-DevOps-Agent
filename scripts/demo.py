@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-MODES = ("db_pool", "oom", "disk", "ssl")
+MODES = ("db_pool", "oom", "ssl", "bad_config", "dependency_down", "bad_release", "unknown")
 ACTIVE = {"waiting_approval", "approved", "executing", "verifying",
           "resolved", "resolved_manual", "rejected", "failed", "escalated"}
 DONE = {"resolved", "resolved_manual", "rejected", "failed", "escalated"}
@@ -45,6 +45,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Sentinel self-healing demo")
     parser.add_argument("--base", default="http://127.0.0.1:8000")
     parser.add_argument("--mode", default="db_pool", choices=MODES)
+    parser.add_argument("--seed", type=int, default=1, help="seed deterministic noise in the demo logs")
     parser.add_argument("--reject", action="store_true", help="reject the proposed fix instead of approving")
     parser.add_argument("--yes", action="store_true", help="do not prompt before approving")
     args = parser.parse_args()
@@ -66,11 +67,11 @@ def main() -> int:
     step(f"agent ready at {args.base}")
 
     # 2. inject the failure
-    status, result = call(args.base, "/api/chaos", "POST", {"mode": args.mode})
+    status, result = call(args.base, "/api/chaos", "POST", {"mode": args.mode, "seed": args.seed})
     if status != 200:
         step(f"chaos injection failed: HTTP {status} {result.get('detail')}")
         return 2
-    step(f"injected failure mode={args.mode} -- service crashes in {result.get('crashing_in_s')}s")
+    step(f"injected failure mode={args.mode}, seed={args.seed}")
 
     # 3. wait for detection + proposal
     injected_at = time.time()

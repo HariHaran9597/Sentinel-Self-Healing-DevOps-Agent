@@ -37,7 +37,9 @@ def build_graph(checkpointer=None):
     builder.add_conditional_edges(
         "retrieve", nodes.route_after_retrieve, {"diagnose": "diagnose", "escalate": "escalate"}
     )
-    builder.add_edge("diagnose", "propose")
+    builder.add_conditional_edges(
+        "diagnose", nodes.route_after_diagnose, {"propose": "propose", "escalate": "escalate"}
+    )
     builder.add_edge("propose", "human_gate")
     builder.add_conditional_edges(
         "human_gate", nodes.route_after_gate, {"execute_fix": "execute_fix", "end": END}

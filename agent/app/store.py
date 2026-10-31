@@ -61,6 +61,7 @@ class IncidentStore:
             "log_excerpt": [],
             "runbook": None,
             "diagnosis": None,
+            "llm_analysis": None,
             "fix": None,
             "approval": None,
             "result": None,

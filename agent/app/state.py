@@ -12,6 +12,9 @@ class AgentState(TypedDict, total=False):
     severity: str
 
     runbook: dict            # best-matching runbook (retrieval node)
+    runbook_candidates: list[dict]
+    llm_analysis: dict | None
+    llm_escalate: bool
     diagnosis: str
 
     fix_command: str

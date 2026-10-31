@@ -93,9 +93,11 @@
       <h2>Chaos injection</h2>
       <p class="hint">Crash <b>payments-api</b> with a production-style failure. Sentinel detects it, retrieves the matching runbook from the vector store and proposes the exact fix &mdash; you stay in control.</p>
       <div class="btnrow">
-        <button data-mode="db_pool">DB pool exhausted</button>
-        <button data-mode="oom">OOM kill</button>
-        <button data-mode="disk">Disk full</button>
+        <button data-mode="bad_config">Persistent bad config</button>
+        <button data-mode="dependency_down">Ledger dependency down</button>
+        <button data-mode="bad_release">Bad release</button>
+        <button data-mode="unknown">Unknown signal</button>
+        <button data-mode="db_pool">DB pool process crash</button>
         <button data-mode="ssl">TLS cert expired</button>
       </div>
     </section>
@@ -132,23 +134,26 @@ function demoNow() { return new Date().toISOString(); }
 function demoEvent(type, message) { return { ts: demoNow(), type, message }; }
 function demoRefreshIncident(mode) {
   const details = {
-    db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
-    oom: ["ERR_OOM", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "medium"],
-    disk: ["ERR_DISK_FULL", "The service cannot write transaction state because the application volume is full.", "docker restart demo-server", "medium"],
-    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high"]
-  }[mode] || ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
+    bad_config: ["ERR_CONFIG_INVALID", "The persistent active config fails validation; a process restart will load the same invalid state.", "restore last-known-good config", "low", "revert_config"],
+    dependency_down: ["ERR_DEPENDENCY_UNAVAILABLE", "The ledger dependency container is stopped; restarting payments alone cannot restore the dependency.", "start sentinel-dependency", "medium", "start_dependency"],
+    bad_release: ["ERR_BAD_RELEASE", "The active release marker is invalid and persists across restarts.", "rollback to last-known-good release", "medium", "rollback_release"],
+    unknown: ["ERR_UNKNOWN_FAULT", "An unclassified canary warning has no user-impact signal; safe behavior is escalation without action.", "", "low", "manual"],
+    db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low", "restart_container"],
+    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high", "manual"]
+  }[mode] || ["ERR_UNKNOWN_FAULT", "Unclassified signal; escalation required.", "", "low", "manual"];
   const detected = Date.now() / 1000;
-  demoServerUp = false;
+  demoServerUp = mode === "unknown";
   demoIncident = {
-    id: "INC-DEMO01", error_code: details[0], status: "waiting_approval", severity: details[3],
-    detected_at: detected, proposed_at: detected + 1.8, resolved_at: null,
-    diagnosis: details[1], fix: { command: details[2], risk: details[3], action: mode === "ssl" ? "manual" : "restart_container" },
+    id: "INC-DEMO01", error_code: details[0], status: mode === "unknown" ? "escalated" : "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: mode === "unknown" ? null : detected + 1.8, resolved_at: mode === "unknown" ? detected + 1.8 : null,
+    diagnosis: details[1], fix: { command: details[2], risk: details[3], action: details[4] },
     events: [
       demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
-      demoEvent("retrieved", "Matched runbook by exact error code in ChromaDB"),
+      ...(mode === "unknown" ? [] : [demoEvent("retrieved", "Matched a runbook using the error signature and evidence")]),
       demoEvent("diagnosed", details[1]),
-      demoEvent("proposed", `Human approval required before applying: ${details[2]}`)
-    ]
+      ...(mode === "unknown" ? [demoEvent("escalated", "No safe runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
+    ],
+    resolution: mode === "unknown" ? "Correctly escalated without restarting a healthy service." : null
   };
   demoLogs.push(`${demoNow()} ERROR ${details[0]} payments-api request failed`, `${demoNow()} ERROR service stopped; awaiting remediation`);
   return { mode, status: "crashed" };
@@ -158,17 +163,17 @@ function demoDecision(approved) {
   if (!demoIncident) throw new Error("No incident is waiting for approval");
   const t = Date.now() / 1000;
   demoIncident.events.push(demoEvent(approved ? "approved" : "rejected", approved ? "Engineer approved the proposed remediation" : "Engineer rejected the proposed remediation"));
-  if (approved && demoIncident.fix.risk !== "high") {
+  if (approved && demoIncident.fix.action !== "manual") {
     demoIncident.status = "resolved";
     demoIncident.resolved_at = t + 4.2;
     demoServerUp = true;
     demoIncident.result = "Restart completed; health verification returned HTTP 200.";
-    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.command}`));
+    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.action}`));
     demoIncident.events.push(demoEvent("verified", "payments-api health endpoint returned 200 OK"));
     demoLogs.push(`${demoNow()} INFO payments-api restarted by Sentinel`, `${demoNow()} INFO health verification passed`);
   } else {
     demoIncident.status = approved ? "escalated" : "rejected";
-    demoIncident.resolution = approved ? "High-risk change escalated for manual certificate renewal." : "No action taken; engineer retained control.";
+    demoIncident.resolution = approved ? "Manual action acknowledged; Sentinel did not execute it." : "No action taken; engineer retained control.";
   }
   return demoIncident;
 }
@@ -176,7 +181,7 @@ function demoDecision(approved) {
 async function api(path, opts) {
   if (DEMO_MODE) {
     const method = opts?.method || "GET";
-    if (path === "/api/status") return { server_up: demoServerUp };
+    if (path === "/api/status") return { server_up: demoServerUp, server_healthy: demoServerUp };
     if (path === "/api/incidents") return { incidents: demoIncident ? [demoIncident] : [] };
     if (path.startsWith("/api/logs/tail")) return { lines: demoLogs.slice(-140) };
     if (path === "/api/server/start") { demoServerUp = true; return { ok: true }; }
@@ -198,6 +203,7 @@ function fmtDelta(a, b) {
 function card(i) {
   const fix = i.fix || {};
   const actionLabel = fix.action === "manual" ? "Acknowledge escalation" : "Approve fix";
+  const llm = i.llm_analysis;
   const d2p = fmtDelta(i.detected_at, i.proposed_at);
   const d2r = fmtDelta(i.detected_at, i.resolved_at);
   const buttons = i.status === "waiting_approval" ? `
@@ -221,6 +227,7 @@ function card(i) {
     </div>
     ${fix.command ? `<div class="fixline"><span class="prompt">$</span> ${esc(fix.command)} <span style="margin-left:auto;color:var(--muted)">risk: ${esc(fix.risk)}</span></div>` : ""}
     ${i.diagnosis ? `<div class="diag">${esc(i.diagnosis)}</div>` : ""}
+    ${llm ? `<details><summary>Groq second opinion · ${esc(llm.model)} · ${esc(String(Math.round(llm.latency_ms)))} ms</summary><div class="diag">Action suggestion: <b>${esc(llm.recommended_action)}</b> · confidence ${esc(String(llm.confidence))}</div><div class="ev">Evidence refs: ${esc((llm.evidence_refs || []).join(", "))}</div><div class="ev">${esc(JSON.stringify(llm.evidence || {}))}</div></details>` : ""}
     ${i.result || i.resolution ? `<div class="diag" style="color:var(--ok)">${esc(i.result || i.resolution)}</div>` : ""}
     <details><summary>timeline (${(i.events || []).length})</summary>${events}</details>
     ${buttons}
@@ -241,7 +248,7 @@ function renderLog(lines) {
 async function tick() {
   try {
     const st = await api("/api/status");
-    $("#server-dot").className = "dot " + (st.server_up ? "ok" : "bad");
+    $("#server-dot").className = "dot " + (st.server_healthy ? "ok" : "bad");
     $("#btn-start").style.display = st.server_up ? "none" : "";
   } catch { $("#agent-dot").className = "dot bad"; }
   if (paused) return;

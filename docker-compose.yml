@@ -11,8 +11,20 @@ services:
       - "127.0.0.1:${SENTINEL_DEMO_PORT:-18080}:8080"
     volumes:
       - applogs:/var/log/app
+      - demo_state:/state
     environment:
       LOG_PATH: /var/log/app/app.log
+      DEMO_STATE_FILE: /state/state.json
+      DEPENDENCY_URL: http://sentinel-dependency:8090
+    depends_on:
+      - dependency
+
+  dependency:
+    build: ./dependency-server
+    container_name: sentinel-dependency
+    labels:
+      com.hariharan.sentinel.managed: "true"
+    restart: "no"
 
   agent:
     build: ./agent
@@ -24,23 +36,26 @@ services:
       - applogs:/var/log/app            # watch the same log the service writes
       - chroma_data:/data/chroma        # persistent vector store
       - sentinel_data:/data             # durable incidents and audit timeline
+      - demo_state:/state               # isolated scenario state; never edits host files
       - /var/run/docker.sock:/var/run/docker.sock   # remediates via the Docker API
     environment:
       LOG_PATH: /var/log/app/app.log
       RUNBOOKS_DIR: /app/runbooks
       CHROMA_PATH: /data/chroma
       DATABASE_PATH: /data/sentinel.sqlite3
+      DEMO_STATE_FILE: /state/state.json
       EXECUTOR_MODE: docker
       TARGET_CONTAINER: demo-server
+      DEPENDENCY_CONTAINER: sentinel-dependency
       DEMO_SERVER_URL: http://demo-server:8080
       TARGET_HEALTH_URL: http://demo-server:8080/health
+      EVALUATION_MODE: "true"
       REQUIRE_APPROVAL: "true"
       COOLDOWN_SECONDS: ${COOLDOWN_SECONDS:-30}
-      # Optional LLM-enriched diagnosis (agent works without it):
+      # Optional evidence-grounded Groq second opinion; never required to run:
       LLM_DIAGNOSIS_ENABLED: ${LLM_DIAGNOSIS_ENABLED:-false}
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-https://api.openai.com/v1}
-      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      GROQ_MODEL: ${GROQ_MODEL:-openai/gpt-oss-20b}
     depends_on:
       - demo-server
 
@@ -48,3 +63,4 @@ volumes:
   applogs:
   chroma_data:
   sentinel_data:
+  demo_state:

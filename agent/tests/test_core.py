@@ -137,7 +137,7 @@ def wired_runtime(monkeypatch, tmp_path):
     runtime.settings = Settings()  # real defaults are side-effect free
     runtime.settings.require_approval = True
     runtime.settings.executor_mode = "dry-run"
-    runtime.settings.openai_api_key = ""
+    runtime.settings.groq_api_key = ""
     runtime.settings.llm_diagnosis_enabled = False
     runtime.store = IncidentStore()
     runtime.runbooks = _StubRunbooks()
@@ -149,12 +149,58 @@ def wired_runtime(monkeypatch, tmp_path):
 
 
 def test_llm_is_disabled_unless_explicitly_enabled(wired_runtime, monkeypatch):
-    runtime.settings.openai_api_key = "test-key"
+    runtime.settings.groq_api_key = "test-key"
     calls = []
     monkeypatch.setattr(llm.httpx, "post", lambda *args, **kwargs: calls.append(args))
     assert llm.llm_available() is False
-    assert llm.llm_diagnose({"raw_log": []}) is None
+    assert llm.llm_assess({"raw_log": []}, [{"rb_id": "RB-001", "fix_action": "restart_container"}]) is None
     assert calls == []
+
+
+def test_groq_assessment_rejects_unallowlisted_action(wired_runtime, monkeypatch):
+    runtime.settings.llm_diagnosis_enabled = True
+    runtime.settings.groq_api_key = "test-key"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"hypothesis":"config issue","runbook_id":"RB-001","recommended_action":"arbitrary_shell","confidence":0.9,"evidence_refs":["LOG-01"],"rationale":"because","abstain":false}'}}]}
+
+    monkeypatch.setattr(llm.httpx, "post", lambda *args, **kwargs: Response())
+    state = {"error_code": "ERR_TEST", "raw_log": ["config invalid"]}
+    candidates = [{"rb_id": "RB-001", "title": "config", "summary": "bad config", "resolution": "restore",
+                  "fix_action": "revert_config", "risk": "low"}]
+    assert llm.llm_assess(state, candidates) is None
+
+
+def test_groq_assessment_only_returns_cited_evidence(wired_runtime, monkeypatch):
+    runtime.settings.llm_diagnosis_enabled = True
+    runtime.settings.groq_api_key = "test-key"
+    captured = {}
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"choices": [{"message": {"content": '{"hypothesis":"runtime config invalid","runbook_id":"RB-006","recommended_action":"revert_config","confidence":0.92,"evidence_refs":["LOG-01","RB-RB-006"],"rationale":"Both references describe config validation.","abstain":false}'}}], "usage": {"prompt_tokens": 100, "completion_tokens": 30}}
+
+    def fake_post(url, **kwargs):
+        captured["url"] = url
+        captured["body"] = kwargs["json"]
+        return Response()
+
+    monkeypatch.setattr(llm.httpx, "post", fake_post)
+    state = {"error_code": "ERR_CONFIG_INVALID", "raw_log": ["config invalid token=shh"]}
+    candidate = {"rb_id": "RB-006", "title": "Bad config", "summary": "Config invalid",
+                 "resolution": "Restore config", "fix_action": "revert_config", "risk": "low"}
+    result = llm.llm_assess(state, [candidate])
+    assert result["recommended_action"] == "revert_config"
+    assert result["evidence_refs"] == ["LOG-01", "RB-RB-006"]
+    assert "[REDACTED]" in captured["body"]["messages"][1]["content"]
+    assert captured["url"] == "https://api.groq.com/openai/v1/chat/completions"
 
 
 def test_graph_pauses_at_hitl_and_resolves_after_approval(wired_runtime):

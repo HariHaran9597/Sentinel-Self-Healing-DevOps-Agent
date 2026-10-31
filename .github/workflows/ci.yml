@@ -47,7 +47,11 @@ jobs:
       - name: Build demo-server image
         run: docker build -t demo-server ./demo-server
 
+      - name: Build dependency-server image
+        run: docker build -t sentinel-dependency ./dependency-server
+
       - name: Verify images exist
         run: |
           docker images sentinel-agent --format '{{.Repository}}:{{.Tag}} {{.Size}}'
           docker images demo-server --format '{{.Repository}}:{{.Tag}} {{.Size}}'
+          docker images sentinel-dependency --format '{{.Repository}}:{{.Tag}} {{.Size}}'

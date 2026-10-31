@@ -24,9 +24,11 @@ class Settings:
         self.runbooks_dir = _env_path("RUNBOOKS_DIR", AGENT_DIR / "runbooks")
         self.chroma_path = _env_path("CHROMA_PATH", AGENT_DIR / "data" / "chroma")
         self.database_path = _env_path("DATABASE_PATH", PROJECT_DIR / "data" / "sentinel.sqlite3")
+        self.demo_state_file = _env_path("DEMO_STATE_FILE", PROJECT_DIR / "data" / "demo-state.json")
 
         # Remediation target
         self.target_container = os.environ.get("TARGET_CONTAINER", "demo-server")
+        self.dependency_container = os.environ.get("DEPENDENCY_CONTAINER", "sentinel-dependency")
         self.demo_server_url = os.environ.get("DEMO_SERVER_URL", "http://127.0.0.1:8080")
         self.target_health_url = os.environ.get(
             "TARGET_HEALTH_URL", self.demo_server_url.rstrip("/") + "/health"
@@ -43,10 +45,12 @@ class Settings:
         self.local_server_script = _env_path("LOCAL_SERVER_SCRIPT", PROJECT_DIR / "demo-server" / "server.py")
         self.local_server_port = int(os.environ.get("LOCAL_SERVER_PORT", "8080"))
 
-        # Optional LLM-enriched diagnosis (any OpenAI-compatible endpoint)
-        self.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+        # Optional evidence-grounded second opinion (Groq's OpenAI-compatible API).
+        self.groq_api_key = os.environ.get("GROQ_API_KEY", "")
+        self.groq_model = os.environ.get("GROQ_MODEL", "openai/gpt-oss-20b")
         self.llm_diagnosis_enabled = os.environ.get("LLM_DIAGNOSIS_ENABLED", "false").lower() in {
             "1", "true", "yes", "on",
         }
-        self.openai_base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
-        self.openai_model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        self.evaluation_mode = os.environ.get("EVALUATION_MODE", "false").lower() in {
+            "1", "true", "yes", "on",
+        }

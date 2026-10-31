@@ -24,6 +24,8 @@
   <a href="#architecture">Architecture</a>
   &nbsp;|&nbsp;
   <a href="#the-self-healing-loop-in-action">Evidence</a>
+  &nbsp;|&nbsp;
+  <a href="docs/sentinel-60s.mp4">60-second walkthrough</a>
 </p>
 
 > The public demo is a safe browser-based simulation of the incident loop. Run the Docker
@@ -55,27 +57,26 @@
 
 Timing varies by machine; these measurements are not an SLA.
 
-## Recorded fault evaluation
+## Matched-seed recovery evaluation
 
-The reproducible evaluation injects each supported fault into the disposable Compose demo service, approves proposed actions through the HTTP API, and verifies health after remediation. TLS expiry is expected to escalate because rotating credentials requires a human.
+Sentinel is compared with a deliberately simple **restart-only remediation baseline** on the same five seeds across three persistent faults and one unknown signal. Bad config and bad release survive a process restart; dependency outage is a separate labeled container; the unknown signal should not trigger an action. The monitor remains active during the baseline arm, but the evaluator approves no remediation; this isolates the effect of the restart-only intervention, not monitor compute overhead. For Sentinel, the evaluator auto-approves proposed actions, then independently probes `/payments/status` from the host and requires 30 seconds of continuous health. It records injection-to-recovery median, p95 and max, recovery rates, unnecessary actions, correct escalation, and Wilson 95% intervals.
 
-Run it locally after starting the stack:
+Run the complete comparison after starting Docker Compose (about 20–25 minutes at default settings):
 
 ```powershell
-$env:COOLDOWN_SECONDS = "0"
-docker compose up --build -d --force-recreate agent
-python scripts/evaluate_sentinel.py --runs-per-mode 5
-Remove-Item Env:COOLDOWN_SECONDS
-docker compose up -d --force-recreate agent
+docker compose up --build -d
+python scripts/evaluate_sentinel.py --replicates 5 --soak-seconds 30
 ```
 
-The checked-in [evaluation record](docs/results/sentinel-chaos-evaluation.json) includes the run date, per-trial outcomes, median and p95 detection-to-terminal time, and limitations. It measures this controlled lab on one laptop; it is not production incident evidence or a service-level guarantee.
+The current recorded JSON is [here](docs/results/sentinel-comparison.json), with per-trial evidence, methodology, uncertainty intervals, and limitations. This is a small controlled lab comparison, not evidence of production reliability or a customer SLO. The evaluation driver auto-approves proposed actions; it does not measure a human approval workflow.
 
 ## Resume evidence
 
-> Built a Docker Compose self-healing operations agent with log-based incident detection, runbook retrieval, human-approved allowlisted remediation, durable incident checkpoints, and post-action health verification. In 20 sequential local chaos trials across four fault classes, all 20 reached the expected safe outcome (15 automatic recoveries, 5 certificate escalations, 0 false recovery claims); median detection-to-terminal time was 1.92 s (p95 3.48 s).
+> Built Sentinel, a Docker Compose incident-remediation agent with LangGraph runbook retrieval, human approval, allowlisted Docker actions, and an independent sustained-health probe. In 40 matched-seed local trials (5 per scenario), Sentinel recovered 15/15 actionable persistent faults and correctly escalated 5/5 unknown signals, while a restart-only baseline recovered 0/15 and restarted unnecessarily on 5/5 unknown signals. Sentinel recovery latency was 4.50 s median and 9.19 s p95, measured from injection to first external business-probe success and accepted only after 30 seconds of continuous health.
 
-Use this result with its scope attached: it is a controlled lab evaluation on one laptop, with repeated trials that are not statistically independent. It does not establish production reliability, customer availability, or business savings.
+This is a controlled local fixture comparison, not production reliability evidence. Wilson 95% intervals are broad (15/15 recovery: 79.6–100%; 5/5 escalation: 56.6–100%), and the evaluation driver auto-approved actions. The baseline monitor can create an unapproved incident record; it does not execute a fix. See the dated [trial record](docs/results/sentinel-comparison.json) and its full limitations. Do not cite the retired “20/20 expected outcomes” result.
+
+The public site also includes a 60-second visual walkthrough generated from this report. Regenerate it after a new run with `pip install -r scripts/requirements-video.txt` followed by `python scripts/make_demo_video.py`.
 
 ## Dashboard walkthrough
 
@@ -136,7 +137,7 @@ docker compose up --build
 | **Agent API** (FastAPI docs) | http://localhost:18000/docs |
 | **Demo server** (the crashable victim) | http://localhost:18080/health |
 
-The host ports bind to `127.0.0.1` and default to `18000`/`18080` to avoid common local port conflicts. Override them with `SENTINEL_AGENT_PORT` and `SENTINEL_DEMO_PORT` if needed. Optional LLM diagnosis is disabled by default; enable it explicitly with `LLM_DIAGNOSIS_ENABLED=true` and an `OPENAI_API_KEY`.
+The host ports bind to `127.0.0.1` and default to `18000`/`18080` to avoid common local port conflicts. Override them with `SENTINEL_AGENT_PORT` and `SENTINEL_DEMO_PORT` if needed. Optional Groq diagnosis is disabled by default. To enable it, copy `.env.example` to `.env`, set `LLM_DIAGNOSIS_ENABLED=true` and add a rotated `GROQ_API_KEY`. The key stays server-side. Groq receives redacted log excerpts and runbook candidates; only use sanitized demo logs. Its response is constrained to candidate runbook actions or escalation, and remediation still requires the human gate.
 
 Incident timelines and pending LangGraph approvals are stored in the `sentinel_data` Docker volume and survive an agent restart. The Docker executor refuses to act on containers without the `com.hariharan.sentinel.managed=true` label. The Docker socket still grants the agent container broad access to the local Docker daemon, so run this lab only on a machine you control and never point it at production workloads.
 
@@ -161,7 +162,7 @@ python scripts/demo.py --base http://127.0.0.1:18000 --mode ssl --reject
 | `GET` | `/api/incidents/{id}` | Incident + full timeline |
 | `POST` | `/api/incidents/{id}/approve` | **HITL** — execute the proposed fix |
 | `POST` | `/api/incidents/{id}/reject` | **HITL** — refuse the fix |
-| `POST` | `/api/chaos` | Inject a failure (`db_pool` / `oom` / `disk` / `ssl`) |
+| `POST` | `/api/chaos` | Inject a failure (`db_pool`, `oom`, `ssl`, `bad_config`, `dependency_down`, `bad_release`, `unknown`) |
 | `POST` | `/api/server/start` | Bring the demo server back up |
 | `GET` | `/api/status` | Agent + demo server liveness |
 | `GET` | `/api/logs/tail` | Tail the watched service log |

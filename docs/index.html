@@ -96,19 +96,42 @@
 
 <section class="evidence" aria-labelledby="evidence-title">
   <div class="card">
-    <h2 id="evidence-title">Recorded local fault evaluation</h2>
-    <p class="hint">20 sequential Docker Compose trials · 5 per injected fault · recorded 2026-10-31</p>
-    <div class="metric-grid">
-      <div class="metric"><b>20 / 20</b><span>expected outcomes</span></div>
-      <div class="metric"><b>15</b><span>automatic recoveries</span></div>
-      <div class="metric"><b>5</b><span>safe manual escalations</span></div>
-      <div class="metric"><b>0</b><span>false recovery claims</span></div>
-      <div class="metric"><b>1.92 s</b><span>median detection-to-terminal</span></div>
-      <div class="metric"><b>3.48 s</b><span>p95 detection-to-terminal</span></div>
-    </div>
-    <p class="evidence-note">Controlled faults on one laptop; repeated runs are not independent and are not production reliability or customer-impact evidence. The browser controls below are a simulation. Run the Docker Compose quickstart for the real agent. <a href="results/sentinel-chaos-evaluation.json">View per-trial record</a> · <a href="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent#quickstart">Run locally</a></p>
+    <h2 id="evidence-title">Measured recovery comparison</h2>
+    <p class="hint" id="evaluation-date">Loading the recorded run…</p>
+    <div class="metric-grid" id="evaluation-metrics"></div>
+    <p class="evidence-note" id="evaluation-note">The browser controls below are a simulation. Run Docker Compose for the real agent. <a href="results/sentinel-comparison.json">View per-trial record</a> · <a href="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent#quickstart">Run locally</a></p>
+    <details>
+      <summary>60-second measured walkthrough</summary>
+      <video controls preload="metadata" style="display:block;width:100%;max-width:900px;margin-top:12px;border-radius:8px" aria-label="Sentinel measured recovery comparison walkthrough">
+        <source src="sentinel-60s.mp4" type="video/mp4">
+        Your browser does not support MP4 playback. <a href="sentinel-60s.mp4">Download the 60-second walkthrough</a>.
+      </video>
+      <p class="hint">Generated from the recorded local evaluation. The interactive controls below remain a browser simulation.</p>
+    </details>
   </div>
 </section>
+
+<script>
+fetch('results/sentinel-comparison.json').then(r => { if (!r.ok) throw new Error('not published'); return r.json(); }).then(report => {
+  const baseline = report.summaries.find(x => x.strategy === 'restart_only');
+  const sentinel = report.summaries.find(x => x.strategy === 'sentinel_runbook');
+  const date = new Date(report.run_date_utc);
+  document.getElementById('evaluation-date').textContent = `${report.trial_count} matched trials · ${report.method.sustained_health_seconds}s independent sustained-health window · run ${date.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
+  const pct = x => x == null ? 'n/a' : `${(x * 100).toFixed(0)}%`;
+  const secs = x => x == null ? 'n/a' : `${(x / 1000).toFixed(2)} s`;
+  const rate = (value, interval) => `${pct(value)} · 95% Wilson CI ${(interval || []).map(pct).join('–')}`;
+  const metrics = [
+    [`${sentinel.sustained_recoveries}/${sentinel.actionable_trials} (${pct(sentinel.sustained_recovery_rate)})`, `Sentinel sustained recovery · ${rate(sentinel.sustained_recovery_rate, sentinel.sustained_recovery_rate_wilson_95_ci)}`],
+    [`${baseline.sustained_recoveries}/${baseline.actionable_trials} (${pct(baseline.sustained_recovery_rate)})`, `Restart-only recovery · ${rate(baseline.sustained_recovery_rate, baseline.sustained_recovery_rate_wilson_95_ci)}`],
+    [`${sentinel.unnecessary_actions_on_unknown}/${report.faults.unknown ? sentinel.replicates_per_scenario : 0} vs ${baseline.unnecessary_actions_on_unknown}/${baseline.replicates_per_scenario}`, 'Unnecessary action on unknown: Sentinel vs restart-only'],
+    [`${sentinel.correct_escalations_on_unknown}/${sentinel.replicates_per_scenario} (${pct(sentinel.correct_escalation_rate_on_unknown)})`, `Correct unknown escalations · ${rate(sentinel.correct_escalation_rate_on_unknown, sentinel.correct_escalation_rate_on_unknown_wilson_95_ci)}`],
+    [secs(sentinel.successful_recovery_injection_to_independent_probe_ms_median), 'Sentinel recovery median (fault injection → first probe success)'],
+    [`${secs(sentinel.successful_recovery_injection_to_independent_probe_ms_p95_nearest_rank)} / ${secs(sentinel.successful_recovery_injection_to_independent_probe_ms_max)}`, `Sentinel recovery p95 / max (n=${sentinel.latency_sample_count})`],
+  ];
+  document.getElementById('evaluation-metrics').innerHTML = metrics.map(([value, label]) => `<div class="metric"><b>${value}</b><span>${label}</span></div>`).join('');
+  document.getElementById('evaluation-note').insertAdjacentHTML('afterbegin', 'Controlled persistent fault fixtures on one local machine; auto-approved evaluation actions; small repeated sample with Wilson intervals in the JSON. It is not production reliability evidence. ');
+}).catch(() => { document.getElementById('evaluation-date').textContent = 'No recorded evaluation is published yet.'; });
+</script>
 
 <main>
   <div>
@@ -116,9 +139,11 @@
       <h2>Chaos injection</h2>
       <p class="hint">Crash <b>payments-api</b> with a production-style failure. Sentinel detects it, retrieves the matching runbook from the vector store and proposes the exact fix &mdash; you stay in control.</p>
       <div class="btnrow">
-        <button data-mode="db_pool">DB pool exhausted</button>
-        <button data-mode="oom">OOM kill</button>
-        <button data-mode="disk">Disk full</button>
+        <button data-mode="bad_config">Persistent bad config</button>
+        <button data-mode="dependency_down">Ledger dependency down</button>
+        <button data-mode="bad_release">Bad release</button>
+        <button data-mode="unknown">Unknown signal</button>
+        <button data-mode="db_pool">DB pool process crash</button>
         <button data-mode="ssl">TLS cert expired</button>
       </div>
     </section>
@@ -156,23 +181,26 @@ demoLogs = [
 ];
 function demoRefreshIncident(mode) {
   const details = {
-    db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low"],
-    oom: ["ERR_OOM", "The payments process exceeded its memory limit and was terminated by the kernel.", "docker restart demo-server", "medium"],
-    disk: ["ERR_DISK_FULL", "The service cannot write transaction state because the application volume is full.", "docker restart demo-server", "medium"],
-    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high"]
-  }[mode] || ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted.", "docker restart demo-server", "low"];
+    bad_config: ["ERR_CONFIG_INVALID", "The persistent active config fails validation; a process restart will load the same invalid state.", "restore last-known-good config", "low", "revert_config"],
+    dependency_down: ["ERR_DEPENDENCY_UNAVAILABLE", "The ledger dependency container is stopped; restarting payments alone cannot restore the dependency.", "start sentinel-dependency", "medium", "start_dependency"],
+    bad_release: ["ERR_BAD_RELEASE", "The active release marker is invalid and persists across restarts.", "rollback to last-known-good release", "medium", "rollback_release"],
+    unknown: ["ERR_UNKNOWN_FAULT", "An unclassified canary warning has no user-impact signal; safe behavior is escalation without action.", "", "low", "manual"],
+    db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low", "restart_container"],
+    ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high", "manual"]
+  }[mode] || ["ERR_UNKNOWN_FAULT", "Unclassified signal; escalation required.", "", "low", "manual"];
   const detected = Date.now() / 1000;
-  demoServerUp = false;
+  demoServerUp = mode === "unknown";
   demoIncident = {
-    id: "INC-DEMO01", error_code: details[0], status: "waiting_approval", severity: details[3],
-    detected_at: detected, proposed_at: detected + 1.8, resolved_at: null,
-    diagnosis: details[1], fix: { command: details[2], risk: details[3], action: mode === "ssl" ? "manual" : "restart_container" },
+    id: "INC-DEMO01", error_code: details[0], status: mode === "unknown" ? "escalated" : "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: mode === "unknown" ? null : detected + 1.8, resolved_at: mode === "unknown" ? detected + 1.8 : null,
+    diagnosis: details[1], fix: { command: details[2], risk: details[3], action: details[4] },
     events: [
       demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
-      demoEvent("retrieved", "Matched runbook by exact error code in ChromaDB"),
+      ...(mode === "unknown" ? [] : [demoEvent("retrieved", "Matched a runbook using the error signature and evidence")]),
       demoEvent("diagnosed", details[1]),
-      demoEvent("proposed", `Human approval required before applying: ${details[2]}`)
-    ]
+      ...(mode === "unknown" ? [demoEvent("escalated", "No safe runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
+    ],
+    resolution: mode === "unknown" ? "Correctly escalated without restarting a healthy service." : null
   };
 
   demoLogs.push(`${demoNow()} ERROR ${details[0]} payments-api request failed`, `${demoNow()} ERROR service stopped; awaiting remediation`);
@@ -183,17 +211,17 @@ function demoDecision(approved) {
   if (!demoIncident) throw new Error("No incident is waiting for approval");
   const t = Date.now() / 1000;
   demoIncident.events.push(demoEvent(approved ? "approved" : "rejected", approved ? "Engineer approved the proposed remediation" : "Engineer rejected the proposed remediation"));
-  if (approved && demoIncident.fix.risk !== "high") {
+  if (approved && demoIncident.fix.action !== "manual") {
     demoIncident.status = "resolved";
     demoIncident.resolved_at = t + 4.2;
     demoServerUp = true;
     demoIncident.result = "Restart completed; health verification returned HTTP 200.";
-    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.command}`));
+    demoIncident.events.push(demoEvent("executed", `Applied whitelisted action: ${demoIncident.fix.action}`));
     demoIncident.events.push(demoEvent("verified", "payments-api health endpoint returned 200 OK"));
     demoLogs.push(`${demoNow()} INFO payments-api restarted by Sentinel`, `${demoNow()} INFO health verification passed`);
   } else {
     demoIncident.status = approved ? "escalated" : "rejected";
-    demoIncident.resolution = approved ? "High-risk change escalated for manual certificate renewal." : "No action taken; engineer retained control.";
+    demoIncident.resolution = approved ? "Manual action acknowledged; Sentinel did not execute it." : "No action taken; engineer retained control.";
   }
   return demoIncident;
 }
@@ -201,7 +229,7 @@ function demoDecision(approved) {
 async function api(path, opts) {
   if (DEMO_MODE) {
     const method = opts?.method || "GET";
-    if (path === "/api/status") return { server_up: demoServerUp };
+    if (path === "/api/status") return { server_up: demoServerUp, server_healthy: demoServerUp };
     if (path === "/api/incidents") return { incidents: demoIncident ? [demoIncident] : [] };
     if (path.startsWith("/api/logs/tail")) return { lines: demoLogs.slice(-140) };
     if (path === "/api/server/start") { demoServerUp = true; return { ok: true }; }
@@ -223,6 +251,7 @@ function fmtDelta(a, b) {
 function card(i) {
   const fix = i.fix || {};
   const actionLabel = fix.action === "manual" ? "Acknowledge escalation" : "Approve fix";
+  const llm = i.llm_analysis;
   const d2p = fmtDelta(i.detected_at, i.proposed_at);
   const d2r = fmtDelta(i.detected_at, i.resolved_at);
   const buttons = i.status === "waiting_approval" ? `
@@ -246,6 +275,7 @@ function card(i) {
     </div>
     ${fix.command ? `<div class="fixline"><span class="prompt">$</span> ${esc(fix.command)} <span style="margin-left:auto;color:var(--muted)">risk: ${esc(fix.risk)}</span></div>` : ""}
     ${i.diagnosis ? `<div class="diag">${esc(i.diagnosis)}</div>` : ""}
+    ${llm ? `<details><summary>Groq second opinion · ${esc(llm.model)} · ${esc(String(Math.round(llm.latency_ms)))} ms</summary><div class="diag">Action suggestion: <b>${esc(llm.recommended_action)}</b> · confidence ${esc(String(llm.confidence))}</div><div class="ev">Evidence refs: ${esc((llm.evidence_refs || []).join(", "))}</div><div class="ev">${esc(JSON.stringify(llm.evidence || {}))}</div></details>` : ""}
     ${i.result || i.resolution ? `<div class="diag" style="color:var(--ok)">${esc(i.result || i.resolution)}</div>` : ""}
     <details><summary>timeline (${(i.events || []).length})</summary>${events}</details>
     ${buttons}
@@ -266,7 +296,7 @@ function renderLog(lines) {
 async function tick() {
   try {
     const st = await api("/api/status");
-    $("#server-dot").className = "dot " + (st.server_up ? "ok" : "bad");
+    $("#server-dot").className = "dot " + (st.server_healthy ? "ok" : "bad");
     $("#btn-start").style.display = st.server_up ? "none" : "";
   } catch { $("#agent-dot").className = "dot bad"; }
   if (paused) return;

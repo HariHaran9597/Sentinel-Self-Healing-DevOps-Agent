@@ -39,11 +39,12 @@ log = logging.getLogger("sentinel")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-CHAOS_MODES = ("db_pool", "oom", "disk", "ssl")
+CHAOS_MODES = ("db_pool", "oom", "ssl", "bad_config", "dependency_down", "bad_release", "unknown")
 
 
 class ChaosRequest(BaseModel):
     mode: str = "db_pool"
+    seed: int = 0
 
 
 class DecisionRequest(BaseModel):
@@ -101,6 +102,7 @@ async def lifespan(_: FastAPI):
         settings.cooldown_seconds,
         on_incident=_dispatch_incident,
     )
+    runtime.monitor = monitor
     monitor_task = asyncio.create_task(monitor.run())
 
     _.state.ready = True
@@ -113,6 +115,7 @@ async def lifespan(_: FastAPI):
         monitor_task.cancel()
         _.state.ready = False
         runtime.store.close()
+        runtime.monitor = None
         runtime.checkpointer_connection.close()
         runtime.checkpointer_connection = None
 
@@ -133,13 +136,19 @@ def health():
 @app.get("/api/status")
 async def status():
     up = False
+    healthy = False
     try:
         async with httpx.AsyncClient() as client:
-            response = await client.get(f"{runtime.settings.demo_server_url}/health", timeout=1.5)
-            up = response.status_code == 200
+            live_response, health_response = await asyncio.gather(
+                client.get(f"{runtime.settings.demo_server_url}/live", timeout=1.5),
+                client.get(f"{runtime.settings.demo_server_url}/health", timeout=1.5),
+            )
+            up = live_response.status_code == 200
+            healthy = health_response.status_code == 200
     except Exception:
         up = False
-    return {"agent": "ok", "server_up": up, "server": runtime.settings.target_container}
+        healthy = False
+    return {"agent": "ok", "server_up": up, "server_healthy": healthy, "server": runtime.settings.target_container}
 
 
 @app.get("/api/incidents")
@@ -183,10 +192,18 @@ async def reject(incident_id: str, body: DecisionRequest | None = None):
 async def chaos(request: ChaosRequest):
     if request.mode not in CHAOS_MODES:
         raise HTTPException(400, f"unknown mode {request.mode!r}; expected one of {CHAOS_MODES}")
+    if request.mode == "dependency_down":
+        from .executor import inject_dependency_down
+
+        result = await asyncio.to_thread(inject_dependency_down, request.seed)
+        if not result.get("ok"):
+            raise HTTPException(500, result.get("detail", "dependency fault injection failed"))
+        return {"ok": True, "mode": request.mode, "seed": request.seed, "detail": result["detail"]}
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{runtime.settings.demo_server_url}/chaos", json={"mode": request.mode}, timeout=5
+                f"{runtime.settings.demo_server_url}/chaos",
+                json={"mode": request.mode, "seed": request.seed}, timeout=5
             )
     except httpx.HTTPError as exc:
         raise HTTPException(
@@ -195,6 +212,18 @@ async def chaos(request: ChaosRequest):
             "bring it back from the dashboard",
         )
     return response.json()
+
+
+@app.post("/api/evaluation/reset")
+async def evaluation_reset():
+    if not runtime.settings.evaluation_mode:
+        raise HTTPException(404, "evaluation reset is disabled")
+    from .executor import reset_testbed
+
+    result = await asyncio.to_thread(reset_testbed)
+    if not result.get("ok"):
+        raise HTTPException(500, result.get("detail", "testbed reset failed"))
+    return result
 
 
 @app.post("/api/server/start")

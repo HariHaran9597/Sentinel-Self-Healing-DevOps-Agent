@@ -91,3 +91,9 @@ class LogMonitor:
             self.on_incident(error_code, excerpt)
         except Exception:
             log.exception("incident callback failed")
+
+    def reset_for_evaluation(self) -> None:
+        """Forget only per-run alert state after the isolated lab log is reset."""
+        self._last_seen.clear()
+        self._buffer = b""
+        self._offset = 0

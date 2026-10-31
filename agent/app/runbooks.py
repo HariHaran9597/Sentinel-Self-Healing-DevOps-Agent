@@ -25,6 +25,8 @@ FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SECTION_SPLIT_RE = re.compile(r"(?m)^##\s+")
 
 _query_lock = threading.Lock()  # serialize ONNX embedding calls
+SEMANTIC_MAX_DISTANCE = 0.34
+LLM_CANDIDATE_MAX_DISTANCE = 0.85
 
 
 def parse_runbook(path: Path) -> dict:
@@ -128,39 +130,50 @@ class RunbookStore:
 
     def query(self, error_code: str, context: str = "") -> dict | None:
         """Exact error-code match wins; otherwise best semantic match."""
+        candidates = self.candidates(error_code, context)
+        if not candidates:
+            return None
+        exact = next((candidate for candidate in candidates if candidate["exact_match"]), None)
+        if exact:
+            return exact
+        return candidates[0] if candidates[0]["distance"] <= SEMANTIC_MAX_DISTANCE else None
+
+    def candidates(self, error_code: str, context: str = "", limit: int = 5) -> list[dict]:
+        """Return de-duplicated runbook candidates for deterministic or LLM review."""
         collection = self.client.get_or_create_collection(
             self.COLLECTION, metadata={"hnsw:space": "cosine"}
         )
         if collection.count() == 0:
-            return None
+            return []
         query_text = f"{error_code} {context}"[:800]
         with _query_lock:
-            result = collection.query(query_texts=[query_text], n_results=min(5, collection.count()))
+            result = collection.query(query_texts=[query_text], n_results=min(20, collection.count()))
         documents = result["documents"][0]
         metadatas = result["metadatas"][0]
         distances = result["distances"][0]
-
-        exact = [
-            i for i, m in enumerate(metadatas)
-            if error_code in (m.get("error_codes") or "").split(",")
-        ]
-        idx = exact[0] if exact else 0
-        meta = metadatas[idx]
-        rb_id = meta["rb_id"]
-        parsed = self._parsed.get(rb_id, {})
-        resolution = (parsed.get("sections", {}).get("Resolution", "") or "")[:400]
-
-        return {
-            "rb_id": rb_id,
-            "title": meta["title"],
-            "summary": (parsed.get("meta", {}).get("summary", "")),
-            "error_codes": [c for c in (meta.get("error_codes") or "").split(",") if c],
-            "severity": meta["severity"],
-            "fix_action": meta["fix_action"],
-            "fix_command": meta["fix_command"],
-            "risk": meta["risk"],
-            "resolution": resolution,
-            "snippet": documents[idx][:400],
-            "distance": float(distances[idx]),
-            "exact_match": bool(exact),
-        }
+        best: dict[str, dict] = {}
+        for document, meta, distance in zip(documents, metadatas, distances):
+            rb_id = meta["rb_id"]
+            parsed = self._parsed.get(rb_id, {})
+            codes = [c for c in (meta.get("error_codes") or "").split(",") if c]
+            candidate = {
+                "rb_id": rb_id,
+                "title": meta["title"],
+                "summary": parsed.get("meta", {}).get("summary", ""),
+                "error_codes": codes,
+                "severity": meta["severity"],
+                "fix_action": meta["fix_action"],
+                "fix_command": meta["fix_command"],
+                "risk": meta["risk"],
+                "resolution": (parsed.get("sections", {}).get("Resolution", "") or "")[:400],
+                "snippet": document[:400],
+                "distance": float(distance),
+                "exact_match": error_code in codes,
+            }
+            old = best.get(rb_id)
+            if old is None or candidate["distance"] < old["distance"]:
+                best[rb_id] = candidate
+        ranked = sorted(best.values(), key=lambda c: (not c["exact_match"], c["distance"]))
+        if not any(candidate["exact_match"] for candidate in ranked):
+            ranked = [c for c in ranked if c["distance"] <= LLM_CANDIDATE_MAX_DISTANCE]
+        return ranked[:max(1, limit)]
