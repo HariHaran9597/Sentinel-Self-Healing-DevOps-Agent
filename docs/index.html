@@ -97,8 +97,15 @@
 <section class="evidence" aria-labelledby="evidence-title">
   <div class="card">
     <h2 id="evidence-title">Measured recovery comparison</h2>
-    <p class="hint" id="evaluation-date">Loading the recorded run…</p>
-    <div class="metric-grid" id="evaluation-metrics"></div>
+    <p class="hint" id="evaluation-date">40 matched trials · 30s independent sustained-health window · run 2026-10-31 18:13 UTC</p>
+    <div class="metric-grid" id="evaluation-metrics">
+      <div class="metric"><b>15/15 (100%)</b><span>Sentinel sustained recovery · 95% Wilson CI 79.6–100%</span></div>
+      <div class="metric"><b>0/15 (0%)</b><span>Restart-only recovery · 95% Wilson CI 0–20.4%</span></div>
+      <div class="metric"><b>0/5 vs 5/5</b><span>Unnecessary action on unknown: Sentinel vs restart-only</span></div>
+      <div class="metric"><b>5/5 (100%)</b><span>Correct unknown escalations · 95% Wilson CI 56.6–100%</span></div>
+      <div class="metric"><b>4.50 s</b><span>Sentinel recovery median (fault injection → first probe success)</span></div>
+      <div class="metric"><b>9.19 s / 9.19 s</b><span>Sentinel recovery p95 / max (n=15)</span></div>
+    </div>
     <p class="evidence-note" id="evaluation-note">The browser controls below are a simulation. Run Docker Compose for the real agent. <a href="results/sentinel-comparison.json">View per-trial record</a> · <a href="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent#quickstart">Run locally</a></p>
     <details>
       <summary>60-second measured walkthrough</summary>
