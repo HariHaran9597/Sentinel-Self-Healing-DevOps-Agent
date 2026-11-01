@@ -68,7 +68,7 @@ CRASH_MODES = {
     "ssl": _crash_ssl,
 }
 
-PERSISTENT_MODES = {"bad_config", "bad_release", "unknown"}
+PERSISTENT_MODES = {"bad_config", "paraphrased_config", "bad_release", "unknown", "impacting_unknown", "ambiguous"}
 CHAOS_MODES = set(CRASH_MODES) | PERSISTENT_MODES
 
 
@@ -81,23 +81,36 @@ def _inject_noise(seed: int) -> None:
 
 def _inject_persistent(mode: str, seed: int) -> dict:
     state = load_state()
-    if mode == "bad_config":
+    if mode in {"bad_config", "paraphrased_config"}:
         state["config_valid"] = False
         state["config_error"] = "invalid retry policy"
         save_state(state)
-        code = "ERR_CONFIG_INVALID"
-        detail = f"config validation rejected retry policy (seed={seed})"
+        code = "ERR_CONFIG_INVALID" if mode == "bad_config" else None
+        detail = (f"config validation rejected retry policy (seed={seed})" if code else
+                  f"Invalid runtime configuration: retry policy rejected by startup validation; application requests fail. seed={seed}")
     elif mode == "bad_release":
         state["current_release"] = "2.5.0-bad"
         save_state(state)
         code = "ERR_BAD_RELEASE"
         detail = f"release 2.5.0-bad failed startup validation; prior={state['previous_release']} (seed={seed})"
+    elif mode == "impacting_unknown":
+        state["unknown_failure"] = True
+        save_state(state)
+        code = None
+        detail = f"runtime integrity guard rejected an unrecognized ledger snapshot; payments suspended (seed={seed})"
+    elif mode == "ambiguous":
+        state["config_valid"] = False
+        state["current_release"] = "2.5.0-bad"
+        state["ambiguous_failure"] = True
+        save_state(state)
+        code = None
+        detail = f"config retry policy validation failed and release manifest checksum is invalid; multiple causes remain plausible (seed={seed})"
     else:
         code = "ERR_UNKNOWN_FAULT"
         detail = f"unclassified canary warning with no user-impact signal (seed={seed})"
     _inject_noise(seed)
-    log("ERROR", "fault-injector", f"{detail}; code={code}")
-    return {"ok": True, "mode": mode, "error_code": code, "injected_at": time.time(), "seed": seed}
+    log("ERROR", "payments-api", f"{detail}" + (f"; code={code}" if code else ""))
+    return {"ok": True, "mode": mode, "error_code": code or "ERR_UNCLASSIFIED", "injected_at": time.time(), "seed": seed}
 
 
 async def _heartbeat() -> None:

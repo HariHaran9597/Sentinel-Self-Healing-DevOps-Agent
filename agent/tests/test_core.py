@@ -80,6 +80,21 @@ def test_monitor_cooldown_suppresses_repeat_codes():
     assert len(raised) == 1
 
 
+def test_monitor_flags_uncoded_errors_as_unclassified():
+    raised = []
+    monitor = LogMonitor("unused", 0.1, 30, lambda code, excerpt: raised.append((code, excerpt)))
+    monitor._process(["2026-11-01T00:00:00Z ERROR [runtime] unexpected ledger snapshot rejected"])
+    assert raised[0][0] == "ERR_UNCLASSIFIED"
+
+
+def test_paused_monitor_does_not_create_control_arm_incidents():
+    raised = []
+    monitor = LogMonitor("unused", 0.1, 30, lambda code, excerpt: raised.append((code, excerpt)))
+    monitor.pause_for_evaluation(True)
+    monitor._process([_fake_error_line()])
+    assert raised == []
+
+
 # ---------------------------------------------------------------- store
 
 def test_store_lifecycle_and_iso_twins():
@@ -107,6 +122,19 @@ def test_store_survives_agent_restart(tmp_path):
     assert record["status"] == "waiting_approval"
     assert record["events"][0]["message"] == "reproducible test event"
     restarted.close()
+
+
+def test_recent_incident_limit_keeps_older_pending_approval():
+    store = IncidentStore()
+    store.create("INC-PENDING", error_code="ERR_PENDING")
+    store.update("INC-PENDING", status="waiting_approval")
+    for index in range(3):
+        incident_id = f"INC-DONE-{index}"
+        store.create(incident_id, error_code="ERR_DONE")
+        store.update(incident_id, status="resolved")
+    visible = store.list(limit=1)
+    assert [record["id"] for record in visible] == ["INC-DONE-2", "INC-PENDING"]
+    store.close()
 
 
 def test_executor_rejects_unmanaged_container(wired_runtime):

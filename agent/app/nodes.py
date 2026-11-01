@@ -12,7 +12,7 @@ from langgraph.types import interrupt
 
 from . import runtime
 from .llm import llm_assess, llm_available
-from .runbooks import SEMANTIC_MAX_DISTANCE
+from .runbooks import SEMANTIC_MAX_DISTANCE, SEMANTIC_MIN_MARGIN
 
 log = logging.getLogger("sentinel.graph")
 
@@ -44,7 +44,11 @@ def retrieve(state: dict) -> dict:
         candidates = runbooks.candidates(code, context)
         match = next((candidate for candidate in candidates if candidate["exact_match"]), None)
         if match is None and candidates and candidates[0]["distance"] <= SEMANTIC_MAX_DISTANCE:
-            match = candidates[0]
+            close_competitor = (len(candidates) > 1
+                                and candidates[1]["distance"] <= SEMANTIC_MAX_DISTANCE
+                                and candidates[1]["distance"] - candidates[0]["distance"] < SEMANTIC_MIN_MARGIN)
+            if not close_competitor:
+                match = candidates[0]
     else:
         match = runbooks.query(code, context)
         candidates = [match] if match else []

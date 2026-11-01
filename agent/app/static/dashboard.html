@@ -94,9 +94,12 @@
       <p class="hint">Crash <b>payments-api</b> with a production-style failure. Sentinel detects it, retrieves the matching runbook from the vector store and proposes the exact fix &mdash; you stay in control.</p>
       <div class="btnrow">
         <button data-mode="bad_config">Persistent bad config</button>
+        <button data-mode="paraphrased_config">Paraphrased config failure</button>
         <button data-mode="dependency_down">Ledger dependency down</button>
         <button data-mode="bad_release">Bad release</button>
         <button data-mode="unknown">Unknown signal</button>
+        <button data-mode="impacting_unknown">Impacting unknown fault</button>
+        <button data-mode="ambiguous">Ambiguous multi-cause fault</button>
         <button data-mode="db_pool">DB pool process crash</button>
         <button data-mode="ssl">TLS cert expired</button>
       </div>
@@ -135,23 +138,27 @@ function demoEvent(type, message) { return { ts: demoNow(), type, message }; }
 function demoRefreshIncident(mode) {
   const details = {
     bad_config: ["ERR_CONFIG_INVALID", "The persistent active config fails validation; a process restart will load the same invalid state.", "restore last-known-good config", "low", "revert_config"],
+    paraphrased_config: ["ERR_UNCLASSIFIED", "Retry budget exceeds the approved delivery policy. No error code is present, so retrieval must rely on log wording.", "restore last-known-good config", "medium", "revert_config"],
     dependency_down: ["ERR_DEPENDENCY_UNAVAILABLE", "The ledger dependency container is stopped; restarting payments alone cannot restore the dependency.", "start sentinel-dependency", "medium", "start_dependency"],
     bad_release: ["ERR_BAD_RELEASE", "The active release marker is invalid and persists across restarts.", "rollback to last-known-good release", "medium", "rollback_release"],
     unknown: ["ERR_UNKNOWN_FAULT", "An unclassified canary warning has no user-impact signal; safe behavior is escalation without action.", "", "low", "manual"],
+    impacting_unknown: ["ERR_UNCLASSIFIED", "An unrecognized ledger integrity fault has stopped payments; safe behavior is escalation without an ungrounded action.", "", "high", "manual"],
+    ambiguous: ["ERR_UNCLASSIFIED", "Config validation and release integrity both failed; multiple causes remain plausible and require human investigation.", "", "high", "manual"],
     db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low", "restart_container"],
     ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high", "manual"]
   }[mode] || ["ERR_UNKNOWN_FAULT", "Unclassified signal; escalation required.", "", "low", "manual"];
   const detected = Date.now() / 1000;
+  const needsEscalation = ["unknown", "impacting_unknown", "ambiguous"].includes(mode);
   demoServerUp = mode === "unknown";
   demoIncident = {
-    id: "INC-DEMO01", error_code: details[0], status: mode === "unknown" ? "escalated" : "waiting_approval", severity: details[3],
-    detected_at: detected, proposed_at: mode === "unknown" ? null : detected + 1.8, resolved_at: mode === "unknown" ? detected + 1.8 : null,
+    id: "INC-DEMO01", error_code: details[0], status: needsEscalation ? "escalated" : "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: needsEscalation ? null : detected + 1.8, resolved_at: needsEscalation ? detected + 1.8 : null,
     diagnosis: details[1], fix: { command: details[2], risk: details[3], action: details[4] },
     events: [
       demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
-      ...(mode === "unknown" ? [] : [demoEvent("retrieved", "Matched a runbook using the error signature and evidence")]),
+      ...(!needsEscalation ? [demoEvent("retrieved", mode === "paraphrased_config" ? "Semantic runbook match from paraphrased log evidence; no exact code" : "Matched a runbook using the error signature and evidence")] : []),
       demoEvent("diagnosed", details[1]),
-      ...(mode === "unknown" ? [demoEvent("escalated", "No safe runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
+      ...(needsEscalation ? [demoEvent("escalated", "No safe unambiguous runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
     ],
     resolution: mode === "unknown" ? "Correctly escalated without restarting a healthy service." : null
   };
@@ -208,8 +215,8 @@ function card(i) {
   const d2r = fmtDelta(i.detected_at, i.resolved_at);
   const buttons = i.status === "waiting_approval" ? `
     <div class="actions">
-      <button class="primary" data-act="approve" data-id="${i.id}">&#10003; ${actionLabel}</button>
-      <button class="danger" data-act="reject" data-id="${i.id}">&#10007; Reject</button>
+      <button class="primary" data-act="approve" data-id="${esc(i.id)}">&#10003; ${actionLabel}</button>
+      <button class="danger" data-act="reject" data-id="${esc(i.id)}">&#10007; Reject</button>
     </div>` : "";
   const events = (i.events || []).map(e =>
     `<div class="ev">${esc(e.ts)} <b>${esc(e.type)}</b> ${esc(e.message)}</div>`).join("");

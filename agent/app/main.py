@@ -23,15 +23,15 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from . import runtime
 from .config import Settings
 from .graph import build_graph
 from .monitor import LogMonitor
-from .runbooks import RunbookStore
+from .runbooks import RunbookStore, SEMANTIC_MAX_DISTANCE, SEMANTIC_MIN_MARGIN
 from .store import IncidentStore
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -39,17 +39,30 @@ log = logging.getLogger("sentinel")
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
 
-CHAOS_MODES = ("db_pool", "oom", "ssl", "bad_config", "dependency_down", "bad_release", "unknown")
+CHAOS_MODES = ("db_pool", "oom", "ssl", "bad_config", "paraphrased_config", "dependency_down", "bad_release", "unknown", "impacting_unknown", "ambiguous")
 
 
 class ChaosRequest(BaseModel):
     mode: str = "db_pool"
-    seed: int = 0
+    seed: int = Field(default=0, ge=0, le=2_147_483_647)
 
 
 class DecisionRequest(BaseModel):
-    approver: str = "engineer"
-    reason: str | None = None
+    approver: str = Field(default="engineer", min_length=1, max_length=80)
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class EvaluationPauseRequest(BaseModel):
+    paused: bool = True
+
+
+class EvaluationRetrieveRequest(BaseModel):
+    error_code: str = Field(default="ERR_UNCLASSIFIED", max_length=64)
+    context: str = Field(default="", max_length=2000)
+
+
+class EvaluationApplyRequest(BaseModel):
+    action: str = Field(max_length=32, pattern=r"^(restart_container|revert_config|start_dependency|rollback_release)$")
 
 
 async def handle_incident(error_code: str, excerpt: list[str]) -> None:
@@ -152,8 +165,8 @@ async def status():
 
 
 @app.get("/api/incidents")
-def incidents():
-    return {"incidents": runtime.store.list()}
+def incidents(limit: int = Query(default=50, ge=1, le=500)):
+    return {"incidents": runtime.store.list(limit=limit)}
 
 
 @app.get("/api/incidents/{incident_id}")
@@ -198,7 +211,8 @@ async def chaos(request: ChaosRequest):
         result = await asyncio.to_thread(inject_dependency_down, request.seed)
         if not result.get("ok"):
             raise HTTPException(500, result.get("detail", "dependency fault injection failed"))
-        return {"ok": True, "mode": request.mode, "seed": request.seed, "detail": result["detail"]}
+        return {"ok": True, "mode": request.mode, "seed": request.seed,
+                "error_code": "ERR_DEPENDENCY_UNAVAILABLE", "detail": result["detail"]}
     try:
         async with httpx.AsyncClient() as client:
             response = await client.post(
@@ -226,6 +240,45 @@ async def evaluation_reset():
     return result
 
 
+@app.post("/api/evaluation/pause-monitor")
+async def evaluation_pause_monitor(body: EvaluationPauseRequest):
+    if not runtime.settings.evaluation_mode:
+        raise HTTPException(404, "evaluation controls are disabled")
+    paused = body.paused
+    runtime.monitor.pause_for_evaluation(paused)
+    return {"ok": True, "monitor_paused": paused}
+
+
+@app.post("/api/evaluation/retrieve")
+async def evaluation_retrieve(body: EvaluationRetrieveRequest):
+    if not runtime.settings.evaluation_mode:
+        raise HTTPException(404, "evaluation controls are disabled")
+    candidates = runtime.runbooks.candidates(
+        body.error_code, body.context
+    )
+    exact = next((item for item in candidates if item["exact_match"]), None)
+    selected = exact
+    if selected is None and candidates and candidates[0]["distance"] <= SEMANTIC_MAX_DISTANCE:
+        close_competitor = (len(candidates) > 1
+                            and candidates[1]["distance"] <= SEMANTIC_MAX_DISTANCE
+                            and candidates[1]["distance"] - candidates[0]["distance"] < SEMANTIC_MIN_MARGIN)
+        if not close_competitor:
+            selected = candidates[0]
+    return {"selected": selected, "candidates": candidates[:3]}
+
+
+@app.post("/api/evaluation/apply")
+async def evaluation_apply(body: EvaluationApplyRequest):
+    if not runtime.settings.evaluation_mode:
+        raise HTTPException(404, "evaluation controls are disabled")
+    from .executor import run_fix
+
+    result = await asyncio.to_thread(run_fix, body.action)
+    if not result.get("ok"):
+        raise HTTPException(409, result.get("detail", "allowlisted action failed"))
+    return result
+
+
 @app.post("/api/server/start")
 async def start_server():
     from .executor import start_target
@@ -237,7 +290,7 @@ async def start_server():
 
 
 @app.get("/api/logs/tail")
-def logs_tail(limit: int = 200):
+def logs_tail(limit: int = Query(default=200, ge=1, le=2000)):
     try:
         with open(runtime.settings.log_path, "rb") as fh:
             fh.seek(0, 2)

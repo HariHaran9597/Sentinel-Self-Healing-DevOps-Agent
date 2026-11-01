@@ -21,11 +21,11 @@
 <p align="center">
   <a href="https://hariharan9597.github.io/Sentinel-Self-Healing-DevOps-Agent/">Live Interactive Demo</a>
   &nbsp;|&nbsp;
+  <a href="https://hariharan9597.github.io/Sentinel-Self-Healing-DevOps-Agent/sentinel-60s.mp4">60-second benchmark walkthrough</a>
+  &nbsp;|&nbsp;
   <a href="#architecture">Architecture</a>
   &nbsp;|&nbsp;
-  <a href="#the-self-healing-loop-in-action">Evidence</a>
-  &nbsp;|&nbsp;
-  <a href="docs/sentinel-60s.mp4">60-second walkthrough</a>
+  <a href="#evaluation-status">Evaluation status</a>
 </p>
 
 > The public demo is a safe browser-based simulation of the incident loop. Run the Docker
@@ -33,50 +33,56 @@
 
 ---
 
-## Repository Index
-
-| Project | Description |
-|---|---|
-| **[Sentinel](.)** *(this project)* | Self-healing DevOps agent — LangGraph + ChromaDB + FastAPI |
-| **[Graph-ML](./Graph-ML/)** | GNN fraud ring detection — PyTorch Geometric + NetworkX + FastAPI |
-
 ---
 
 ## The self-healing loop in action
 
-| Step | What happens | Timing |
+| Step | What happens | Evidence |
 |---|---|---|
-| 1. **Crash** | Demo `payments-api` crashes with a production-style error signature | Controlled injection |
-| 2. **Detect** | Monitor tails the log, groups error lines, extracts `ERR_*` code | Measured in recorded run |
-| 3. **Retrieve** | LangGraph queries ChromaDB — exact code match first, semantic fallback | Measured in recorded run |
-| 4. **Diagnose** | Root-cause analysis (runbook template, or opt-in LLM-enriched diagnosis) | Measured in recorded run |
-| 5. **Propose** | Graph pauses at `interrupt()` — asks engineer: *"Apply `docker restart demo-server`?"* | Measured in recorded run |
+| 1. **Inject** | Demo `payments-api` receives a controlled fault | Local Docker demo |
+| 2. **Detect** | Monitor tails the log, groups error lines, extracts `ERR_*` code | Local Docker demo |
+| 3. **Retrieve** | LangGraph queries ChromaDB — exact code match first, semantic fallback | Local Docker demo |
+| 4. **Diagnose** | Runbook diagnosis with optional evidence-grounded LLM assessment | Local Docker demo |
+| 5. **Propose** | Graph pauses at `interrupt()` and requests engineer approval | Local Docker demo |
 | 6. **Approve** | Human clicks **Approve** on the dashboard (or via API) | — |
-| 7. **Execute** | Agent runs whitelisted remediation through the Docker API | Measured in recorded run |
-| 8. **Verify** | Health endpoint polled — incident closed only on `200 OK` | Measured in recorded run |
+| 7. **Execute** | Agent runs allowlisted remediation through the Docker API | Local Docker demo |
+| 8. **Verify** | Agent checks service health after the action | Local Docker demo |
 
-Timing varies by machine; these measurements are not an SLA.
+The hosted page includes the completed, recorded local evaluation below. Its interactive controls are a browser simulation; run Docker Compose to use the real agent and approval flow.
 
-## Matched-seed recovery evaluation
+## Matched strategy evaluation
 
-Sentinel is compared with a deliberately simple **restart-only remediation baseline** on the same five seeds across three persistent faults and one unknown signal. Bad config and bad release survive a process restart; dependency outage is a separate labeled container; the unknown signal should not trigger an action. The monitor remains active during the baseline arm, but the evaluator approves no remediation; this isolates the effect of the restart-only intervention, not monitor compute overhead. For Sentinel, the evaluator auto-approves proposed actions, then independently probes `/payments/status` from the host and requires 30 seconds of continuous health. It records injection-to-recovery median, p95 and max, recovery rates, unnecessary actions, correct escalation, and Wilson 95% intervals.
+The evaluator compares four strategies on matched fault seeds: a fixed restart, a static error-code-to-action dictionary, ChromaDB runbook retrieval with the allowlisted executor (without LangGraph), and the complete Sentinel workflow. The scoped benchmark uses three faults: a bad release requiring rollback, a paraphrased configuration failure without an error code, and an impacting unknown fault requiring escalation. Other fault modes remain available in the local demo but are outside the published comparison. Control arms pause Sentinel's monitor so they cannot receive hidden help from the workflow. Sentinel escalation counts are reported separately from baseline abstentions.
 
-Run the complete comparison after starting Docker Compose (about 20–25 minutes at default settings):
+The evaluator compares all four strategies across these three controlled faults, using five matched seeds, an independent `/payments/status` probe, and a 30-second continuous-health soak: 60 trial records total. These are deterministic lab repetitions, not independent production incidents. The semantic retrieval strategy shares the runbooks and allowlisted executor with Sentinel; this isolates retrieval and workflow contributions without claiming that the full graph outperforms a correct static map on exact-code cases.
+
+### Recorded result (2026-11-01)
+
+| Strategy | Sustained recovery on known faults (10 trials) | Safe handling of impacting unknown (5 trials) | Recovery median | p95 / max |
+|---|---:|---:|---:|---:|
+| Fixed restart | 0/10 (0%; 95% Wilson CI 0–27.8%) | 0/5 (0%; 0–43.5%); acted unnecessarily in all five | — | — |
+| Static dictionary | 5/10 (50%; 23.7–76.3%) | 5/5 abstained safely (100%; 56.6–100%) | 2.03 s (n=5) | 5.30 / 5.30 s |
+| Semantic retrieval | 10/10 (100%; 72.3–100%) | 5/5 abstained safely (100%; 56.6–100%) | 3.07 s (n=10) | 8.91 / 8.91 s |
+| Sentinel runbook | 10/10 (100%; 72.3–100%) | 5/5 escalated safely (100%; 56.6–100%) | 2.54 s (n=10) | 6.25 / 6.25 s |
+
+Each strategy ran five matched seeds for each of three controlled faults (60 arms total). Recovery rates use only the 10 faults expected to recover; safe-handling rates use the five impacting-unknown trials. Latency is measured from fault-injection request start to first independent HTTP 200, among sustained recoveries only; p95 uses nearest-rank and equals the max at these sample sizes. All strategies made zero false recovery claims. The exact per-trial report, run date, intervals, and limitations are in [`docs/results/sentinel-comparison.json`](docs/results/sentinel-comparison.json).
+
+This result supports a narrow conclusion: semantic retrieval handled the paraphrased fixture that the exact-code dictionary missed, while Sentinel and semantic retrieval tied on the measured outcomes. It does not show that LangGraph or an LLM improves reliability over semantic retrieval. The confidence intervals are wide because there are only five deterministic repetitions per fault; these are controlled local fixtures, not independent production incidents. The evaluator auto-approves Sentinel actions, so it does not measure the human approval workflow. Optional Groq diagnosis is excluded.
+
+The [60-second benchmark walkthrough](docs/sentinel-60s.mp4) is a generated visual summary of this JSON report, not a live screen recording.
+
+Reproduce the comparison after Docker Compose is ready. It takes substantial time because every arm uses an injection-relative 60-second maximum observation window and a 30-second independent health soak:
 
 ```powershell
 docker compose up --build -d
-python scripts/evaluate_sentinel.py --replicates 5 --soak-seconds 30
+python scripts/evaluate_sentinel.py --replicates 5 --soak-seconds 30 --observation-seconds 60
 ```
 
-The current recorded JSON is [here](docs/results/sentinel-comparison.json), with per-trial evidence, methodology, uncertainty intervals, and limitations. This is a small controlled lab comparison, not evidence of production reliability or a customer SLO. The evaluation driver auto-approves proposed actions; it does not measure a human approval workflow.
+## Evaluation methodology and limits
 
-## Resume evidence
+The previous report was withdrawn because the independent probe started only after remediation returned. This replacement starts host-side probing immediately after injection, concurrently with diagnosis and action. All strategies share the same 60-second injection-relative window and the same 30-second continuous-health requirement. The JSON records each trial, probe count, outcome, and timing.
 
-> Built Sentinel, a Docker Compose incident-remediation agent with LangGraph runbook retrieval, human approval, allowlisted Docker actions, and an independent sustained-health probe. In 40 matched-seed local trials (5 per scenario), Sentinel recovered 15/15 actionable persistent faults and correctly escalated 5/5 unknown signals, while a restart-only baseline recovered 0/15 and restarted unnecessarily on 5/5 unknown signals. Sentinel recovery latency was 4.50 s median and 9.19 s p95, measured from injection to first external business-probe success and accepted only after 30 seconds of continuous health.
-
-This is a controlled local fixture comparison, not production reliability evidence. Wilson 95% intervals are broad (15/15 recovery: 79.6–100%; 5/5 escalation: 56.6–100%), and the evaluation driver auto-approved actions. The baseline monitor can create an unapproved incident record; it does not execute a fix. See the dated [trial record](docs/results/sentinel-comparison.json) and its full limitations. Do not cite the retired “20/20 expected outcomes” result.
-
-The public site also includes a 60-second visual walkthrough generated from this report. Regenerate it after a new run with `pip install -r scripts/requirements-video.txt` followed by `python scripts/make_demo_video.py`.
+The evaluator auto-approves proposed Sentinel actions; the separate interactive demo retains its human approval gate. These deterministic local fault fixtures do not establish customer or production reliability. The five repeats per fault are not independent field incidents, and the confidence intervals are correspondingly broad. This benchmark does not test the optional LLM diagnosis.
 
 ## Dashboard walkthrough
 
@@ -162,7 +168,7 @@ python scripts/demo.py --base http://127.0.0.1:18000 --mode ssl --reject
 | `GET` | `/api/incidents/{id}` | Incident + full timeline |
 | `POST` | `/api/incidents/{id}/approve` | **HITL** — execute the proposed fix |
 | `POST` | `/api/incidents/{id}/reject` | **HITL** — refuse the fix |
-| `POST` | `/api/chaos` | Inject a failure (`db_pool`, `oom`, `ssl`, `bad_config`, `dependency_down`, `bad_release`, `unknown`) |
+| `POST` | `/api/chaos` | Inject a failure (`db_pool`, `oom`, `ssl`, `bad_config`, `paraphrased_config`, `dependency_down`, `bad_release`, `unknown`, `impacting_unknown`, `ambiguous`) |
 | `POST` | `/api/server/start` | Bring the demo server back up |
 | `GET` | `/api/status` | Agent + demo server liveness |
 | `GET` | `/api/logs/tail` | Tail the watched service log |
@@ -195,7 +201,7 @@ python scripts/demo.py --base http://127.0.0.1:18000 --mode ssl --reject
 │       ├── llm.py                  optional LLM diagnosis with graceful fallback
 │       └── static/dashboard.html   dark-mode ops dashboard (vanilla JS)
 ├── demo-server/
-│   └── server.py                   payments-api: realistic logs + 4 scripted crash modes
+│   └── server.py                   payments-api: realistic logs + 3 crash and 7 persistent-failure modes
 ├── scripts/
 │   └── demo.py                     end-to-end demo driver (stdlib only)
 └── docs/images/                    dashboard screenshots

@@ -35,6 +35,11 @@ jobs:
         working-directory: agent
         run: python -m pytest tests -q --tb=short
 
+      - name: Check evaluation tools compile
+        run: >-
+          python -m py_compile scripts/evaluate_sentinel.py
+          scripts/render_report_metrics.py scripts/make_demo_video.py
+
   docker-build:
     name: Docker build
     runs-on: ubuntu-latest

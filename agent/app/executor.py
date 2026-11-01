@@ -176,9 +176,12 @@ def reset_testbed() -> dict:
         last_error = "service did not become ready"
         while time.monotonic() < deadline:
             try:
-                response = httpx.get(f"{runtime.settings.demo_server_url}/live", timeout=1)
+                # Liveness alone can pass while the separately managed ledger
+                # dependency is still starting. Reset must confirm the same
+                # business health route used by the independent evaluator.
+                response = httpx.get(runtime.settings.target_health_url, timeout=1)
                 if response.status_code == 200:
-                    return {"ok": True, "detail": "restored known-good state; demo liveness confirmed"}
+                    return {"ok": True, "detail": "restored known-good state; business health confirmed"}
                 last_error = f"HTTP {response.status_code}"
             except Exception as exc:
                 last_error = f"{type(exc).__name__}: {exc}"

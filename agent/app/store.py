@@ -99,9 +99,20 @@ class IncidentStore:
             record = self._incidents.get(incident_id)
             return dict(record) if record else None
 
-    def list(self) -> list[dict]:
+    def list(self, limit: int | None = 50) -> list[dict]:
         with self._lock:
-            return [dict(r) for r in reversed(self._incidents.values())]
+            newest = list(reversed(self._incidents.values()))
+            if limit is None:
+                return [dict(r) for r in newest]
+            visible = newest[:limit]
+            visible_ids = {record["id"] for record in visible}
+            # Never hide an unresolved approval just because it is old.
+            visible.extend(
+                record for record in newest[limit:]
+                if record["status"] in {"detected", "analyzing", "waiting_approval"}
+                and record["id"] not in visible_ids
+            )
+            return [dict(r) for r in visible]
 
     def is_terminal(self, incident_id: str) -> bool:
         with self._lock:

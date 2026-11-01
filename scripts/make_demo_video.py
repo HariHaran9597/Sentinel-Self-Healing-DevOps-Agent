@@ -81,30 +81,39 @@ def main() -> None:
     report = json.loads(REPORT.read_text(encoding="utf-8"))
     sentinel = next(row for row in report["summaries"] if row["strategy"] == "sentinel_runbook")
     baseline = next(row for row in report["summaries"] if row["strategy"] == "restart_only")
+    dictionary = next(row for row in report["summaries"] if row["strategy"] == "static_dictionary")
+    semantic = next(row for row in report["summaries"] if row["strategy"] == "semantic_retrieval")
+    def seconds(value: float | None) -> str:
+        return "n/a" if value is None else f"{value / 1000:.2f}s"
+
+    latency_line = (
+        f"{seconds(sentinel['recovery_injection_to_first_healthy_ms_median'])} median · "
+        f"{seconds(sentinel['recovery_injection_to_first_healthy_ms_p95_nearest_rank'])} p95"
+    )
     scenes = [
         card("A fault is injected.", "Sentinel watches a disposable payments API and its ledger dependency.", [
-            ("Four seeded scenarios", "Persistent invalid config · dependency outage · bad release · unknown signal"),
-            ("Matched comparison", "Same five seeds for restart-only and Sentinel runbook strategies."),
+            (f"{len(report['faults'])} scoped fault fixtures", "Bad release rollback · no-code paraphrased config · impacting unknown escalation."),
+            ("Matched comparison", f"Same {report['method']['replicates_per_scenario']} seeds across four remediation strategies."),
         ], BLUE, "01 / 06"),
-        card("The baseline is simple.", "Restart-only restarts the payments container and has no diagnosis or conditional action.", [
-            ("It cannot fix persistent state", "Bad config and bad release survive process restart."),
-            ("It cannot restore a dependency", "The ledger runs in a separate labeled container."),
+        card("The controls start simple.", "A restart-only baseline and a static error-code dictionary use the same allowlisted executor.", [
+            (f"Restart-only recovery: {baseline['correct_sustained_recoveries']}/{baseline['expected_recovery_trials']}", "A restart cannot roll back the bad release or infer the no-code paraphrased fault."),
+            (f"Dictionary recovery: {dictionary['correct_sustained_recoveries']}/{dictionary['expected_recovery_trials']}", "Exact error codes map directly to fixed actions; unknown codes abstain."),
         ], YELLOW, "02 / 06"),
-        card("Sentinel uses evidence.", "A log monitor opens an incident; LangGraph retrieves a matching runbook and proposes a specific action.", [
+        card("Does retrieval add value?", "ChromaDB matches the log evidence to a runbook, then the allowlisted executor applies its action.", [
+            (f"Semantic-only recovery: {semantic['correct_sustained_recoveries']}/{semantic['expected_recovery_trials']}", "Bypasses LangGraph and the LLM to isolate retrieval behavior."),
+            ("No-code paraphrase", "The retry configuration fixture has no ERR_* signature."),
+        ], BLUE, "03 / 06"),
+        card("Sentinel uses the same evidence.", "The full LangGraph workflow retrieves a runbook, diagnoses, and proposes an action.", [
             ("Human approval stays in the loop", "The benchmark driver auto-approves proposals; that timing is not counted as human review."),
             ("Actions are allowlisted", "Config revert · start dependency · rollback release. No arbitrary shell execution."),
-        ], BLUE, "03 / 06"),
+        ], BLUE, "04 / 06"),
         card("Recovery is measured outside Sentinel.", "The host evaluator probes the separate /payments/status business endpoint.", [
-            ("30 seconds of continuous health", "An incident is counted recovered only after the independent probe stays healthy."),
-            ("Unknown signals should not trigger action", "Sentinel should escalate; restart-only is expected to restart unnecessarily."),
-        ], GREEN, "04 / 06"),
-        card(f"{sentinel['sustained_recoveries']}/{sentinel['actionable_trials']} sustained recoveries", "Measured against the matched restart-only baseline.", [
-            (f"Sentinel: {sentinel['successful_recovery_injection_to_independent_probe_ms_median'] / 1000:.2f}s median · {sentinel['successful_recovery_injection_to_independent_probe_ms_p95_nearest_rank'] / 1000:.2f}s p95", "Fault injection to first external probe success; all 15 recoveries then passed the 30-second soak."),
-            (f"Restart-only: {baseline['sustained_recoveries']}/{baseline['actionable_trials']} sustained recoveries", "All three actionable faults remained broken after a restart."),
+            (f"{report['method']['sustained_health_seconds']}s of continuous health", "Recovery counts only after the independent probe remains healthy for the full soak."),
+            (f"{report['method']['observation_window_seconds']}s equal maximum window", "Every strategy shares the same injection-relative observation limit."),
         ], GREEN, "05 / 06"),
-        card("Five seeds per scenario.", "40 matched trials on one local Docker Compose lab; the JSON contains every trial.", [
-            ("Unknown control", f"Sentinel escalated {sentinel['correct_escalations_on_unknown']}/5 with zero actions; Wilson 95% CI for escalation: 56.6–100%."),
-            ("Scope and uncertainty", "Small repeated sample; broad confidence bounds; no production adoption, SLO or customer savings claim."),
+        card("Semantic retrieval ties Sentinel.", "Both recovered all 10 expected-recovery trials in this small controlled fixture set.", [
+            (f"Sentinel recovery: {sentinel['correct_sustained_recoveries']}/{sentinel['expected_recovery_trials']} · {latency_line}", "Latency is injection to first independent probe success; n=10, p95 equals max."),
+            (f"Sentinel safe escalation: {sentinel['correct_sentinel_escalations']}/{sentinel['expected_safe_handling_trials']}", "Retrieval-only controls abstained safely; see all trial records and Wilson intervals in JSON."),
         ], BLUE, "06 / 06"),
     ]
     OUTPUT.parent.mkdir(parents=True, exist_ok=True)

@@ -11,6 +11,8 @@ INITIAL_STATE = {
     "config_valid": True,
     "current_release": KNOWN_GOOD_RELEASE,
     "previous_release": KNOWN_GOOD_RELEASE,
+    "unknown_failure": False,
+    "ambiguous_failure": False,
 }
 
 
@@ -39,6 +41,10 @@ def reset_state() -> dict:
 
 def failure_reason() -> str | None:
     state = load_state()
+    if state.get("ambiguous_failure"):
+        return "ambiguous runtime integrity failure: config and release validation both failed"
+    if state.get("unknown_failure"):
+        return "unclassified runtime integrity failure"
     if not state.get("config_valid"):
         return "active application config is invalid"
     if state.get("current_release") != KNOWN_GOOD_RELEASE:

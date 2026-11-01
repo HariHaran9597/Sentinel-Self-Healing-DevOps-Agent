@@ -23,9 +23,14 @@ log = logging.getLogger("sentinel.runbooks")
 
 FRONTMATTER_RE = re.compile(r"^---\s*\n(.*?)\n---\s*\n", re.DOTALL)
 SECTION_SPLIT_RE = re.compile(r"(?m)^##\s+")
+LOG_METADATA_RE = re.compile(
+    r"\b\d{4}-\d{2}-\d{2}T\S+\s+|\b(?:INFO|WARNING|ERROR|CRITICAL|FATAL)\b\s*|"
+    r"\bseed=\d+\b|\brequest_id=\S+|\btrace=\S+|\bcode=ERR_[A-Z0-9_]+"
+)
 
 _query_lock = threading.Lock()  # serialize ONNX embedding calls
-SEMANTIC_MAX_DISTANCE = 0.34
+SEMANTIC_MAX_DISTANCE = 0.35
+SEMANTIC_MIN_MARGIN = 0.035
 LLM_CANDIDATE_MAX_DISTANCE = 0.85
 
 
@@ -145,7 +150,10 @@ class RunbookStore:
         )
         if collection.count() == 0:
             return []
-        query_text = f"{error_code} {context}"[:800]
+        # Keep operational metadata out of embeddings: timestamps, logger
+        # names, and deterministic seed labels can drown out the fault wording.
+        normalized_context = LOG_METADATA_RE.sub(" ", context)
+        query_text = f"{error_code} {normalized_context}"[:800]
         with _query_lock:
             result = collection.query(query_texts=[query_text], n_results=min(20, collection.count()))
         documents = result["documents"][0]

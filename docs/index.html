@@ -96,49 +96,24 @@
 
 <section class="evidence" aria-labelledby="evidence-title">
   <div class="card">
-    <h2 id="evidence-title">Measured recovery comparison</h2>
-    <p class="hint" id="evaluation-date">40 matched trials · 30s independent sustained-health window · run 2026-10-31 18:13 UTC</p>
+    <h2 id="evidence-title">Recorded matched-strategy benchmark</h2>
+    <p class="hint" id="evaluation-date">60 matched trials · 30s independent soak · 60s max observation window · run 2026-11-01 09:25 UTC</p>
     <div class="metric-grid" id="evaluation-metrics">
-      <div class="metric"><b>15/15 (100%)</b><span>Sentinel sustained recovery · 95% Wilson CI 79.6–100%</span></div>
-      <div class="metric"><b>0/15 (0%)</b><span>Restart-only recovery · 95% Wilson CI 0–20.4%</span></div>
-      <div class="metric"><b>0/5 vs 5/5</b><span>Unnecessary action on unknown: Sentinel vs restart-only</span></div>
-      <div class="metric"><b>5/5 (100%)</b><span>Correct unknown escalations · 95% Wilson CI 56.6–100%</span></div>
-      <div class="metric"><b>4.50 s</b><span>Sentinel recovery median (fault injection → first probe success)</span></div>
-      <div class="metric"><b>9.19 s / 9.19 s</b><span>Sentinel recovery p95 / max (n=15)</span></div>
+      <div class="metric"><b>0/10 (0.0%)</b><span>restart only recovery · 0.0% · 95% Wilson CI 0.0%–27.8%</span></div>
+      <div class="metric"><b>5/10 (50.0%)</b><span>static dictionary recovery · 50.0% · 95% Wilson CI 23.7%–76.3%</span></div>
+      <div class="metric"><b>10/10 (100.0%)</b><span>semantic retrieval recovery · 100.0% · 95% Wilson CI 72.3%–100.0%</span></div>
+      <div class="metric"><b>10/10 (100.0%)</b><span>sentinel runbook recovery · 100.0% · 95% Wilson CI 72.3%–100.0%</span></div>
+      <div class="metric"><b>0/5 (0.0%)</b><span>restart only safe handling · 0.0% · 95% Wilson CI 0.0%–43.5%</span></div>
+      <div class="metric"><b>5/5 (100.0%)</b><span>static dictionary safe handling · 100.0% · 95% Wilson CI 56.6%–100.0%</span></div>
+      <div class="metric"><b>5/5 (100.0%)</b><span>semantic retrieval safe handling · 100.0% · 95% Wilson CI 56.6%–100.0%</span></div>
+      <div class="metric"><b>5/5 (100.0%)</b><span>sentinel runbook safe handling · 100.0% · 95% Wilson CI 56.6%–100.0%</span></div>
+      <div class="metric"><b>2.54 s</b><span>Sentinel recovery median · injection to first healthy probe</span></div>
+      <div class="metric"><b>6.25 s / 6.25 s</b><span>Sentinel p95 / max · n=10</span></div>
     </div>
-    <p class="evidence-note" id="evaluation-note">The browser controls below are a simulation. Run Docker Compose for the real agent. <a href="results/sentinel-comparison.json">View per-trial record</a> · <a href="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent#quickstart">Run locally</a></p>
-    <details>
-      <summary>60-second measured walkthrough</summary>
-      <video controls preload="metadata" style="display:block;width:100%;max-width:900px;margin-top:12px;border-radius:8px" aria-label="Sentinel measured recovery comparison walkthrough">
-        <source src="sentinel-60s.mp4" type="video/mp4">
-        Your browser does not support MP4 playback. <a href="sentinel-60s.mp4">Download the 60-second walkthrough</a>.
-      </video>
-      <p class="hint">Generated from the recorded local evaluation. The interactive controls below remain a browser simulation.</p>
-    </details>
+    <p class="evidence-note" id="evaluation-note">Three controlled local faults, five matched seeds per fault, four strategies, 30-second independent health requirement, and a 60-second maximum observation window. The evaluation auto-approves Sentinel actions and is not production reliability evidence; deterministic repetitions are not independent field incidents. Sentinel ties semantic retrieval on measured outcomes in this fixture set. The interactive controls below are a browser simulation; run Docker Compose for the real agent and human approval flow. <a href="results/sentinel-comparison.json">Download raw report</a> · <a href="results/STATUS.md">Method and limitations</a> · <a href="https://github.com/HariHaran9597/Sentinel-Self-Healing-DevOps-Agent#quickstart">Run locally</a></p>
+    <p class="evidence-note"><a href="sentinel-60s.mp4">Watch the 60-second generated benchmark walkthrough</a> (visual summary of the recorded report; not a live screen recording).</p>
   </div>
 </section>
-
-<script>
-fetch('results/sentinel-comparison.json').then(r => { if (!r.ok) throw new Error('not published'); return r.json(); }).then(report => {
-  const baseline = report.summaries.find(x => x.strategy === 'restart_only');
-  const sentinel = report.summaries.find(x => x.strategy === 'sentinel_runbook');
-  const date = new Date(report.run_date_utc);
-  document.getElementById('evaluation-date').textContent = `${report.trial_count} matched trials · ${report.method.sustained_health_seconds}s independent sustained-health window · run ${date.toISOString().replace('T', ' ').slice(0, 16)} UTC`;
-  const pct = x => x == null ? 'n/a' : `${(x * 100).toFixed(0)}%`;
-  const secs = x => x == null ? 'n/a' : `${(x / 1000).toFixed(2)} s`;
-  const rate = (value, interval) => `${pct(value)} · 95% Wilson CI ${(interval || []).map(pct).join('–')}`;
-  const metrics = [
-    [`${sentinel.sustained_recoveries}/${sentinel.actionable_trials} (${pct(sentinel.sustained_recovery_rate)})`, `Sentinel sustained recovery · ${rate(sentinel.sustained_recovery_rate, sentinel.sustained_recovery_rate_wilson_95_ci)}`],
-    [`${baseline.sustained_recoveries}/${baseline.actionable_trials} (${pct(baseline.sustained_recovery_rate)})`, `Restart-only recovery · ${rate(baseline.sustained_recovery_rate, baseline.sustained_recovery_rate_wilson_95_ci)}`],
-    [`${sentinel.unnecessary_actions_on_unknown}/${report.faults.unknown ? sentinel.replicates_per_scenario : 0} vs ${baseline.unnecessary_actions_on_unknown}/${baseline.replicates_per_scenario}`, 'Unnecessary action on unknown: Sentinel vs restart-only'],
-    [`${sentinel.correct_escalations_on_unknown}/${sentinel.replicates_per_scenario} (${pct(sentinel.correct_escalation_rate_on_unknown)})`, `Correct unknown escalations · ${rate(sentinel.correct_escalation_rate_on_unknown, sentinel.correct_escalation_rate_on_unknown_wilson_95_ci)}`],
-    [secs(sentinel.successful_recovery_injection_to_independent_probe_ms_median), 'Sentinel recovery median (fault injection → first probe success)'],
-    [`${secs(sentinel.successful_recovery_injection_to_independent_probe_ms_p95_nearest_rank)} / ${secs(sentinel.successful_recovery_injection_to_independent_probe_ms_max)}`, `Sentinel recovery p95 / max (n=${sentinel.latency_sample_count})`],
-  ];
-  document.getElementById('evaluation-metrics').innerHTML = metrics.map(([value, label]) => `<div class="metric"><b>${value}</b><span>${label}</span></div>`).join('');
-  document.getElementById('evaluation-note').insertAdjacentHTML('afterbegin', 'Controlled persistent fault fixtures on one local machine; auto-approved evaluation actions; small repeated sample with Wilson intervals in the JSON. It is not production reliability evidence. ');
-}).catch(() => { document.getElementById('evaluation-date').textContent = 'No recorded evaluation is published yet.'; });
-</script>
 
 <main>
   <div>
@@ -147,9 +122,12 @@ fetch('results/sentinel-comparison.json').then(r => { if (!r.ok) throw new Error
       <p class="hint">Crash <b>payments-api</b> with a production-style failure. Sentinel detects it, retrieves the matching runbook from the vector store and proposes the exact fix &mdash; you stay in control.</p>
       <div class="btnrow">
         <button data-mode="bad_config">Persistent bad config</button>
+        <button data-mode="paraphrased_config">Paraphrased config failure</button>
         <button data-mode="dependency_down">Ledger dependency down</button>
         <button data-mode="bad_release">Bad release</button>
         <button data-mode="unknown">Unknown signal</button>
+        <button data-mode="impacting_unknown">Impacting unknown fault</button>
+        <button data-mode="ambiguous">Ambiguous multi-cause fault</button>
         <button data-mode="db_pool">DB pool process crash</button>
         <button data-mode="ssl">TLS cert expired</button>
       </div>
@@ -189,23 +167,27 @@ demoLogs = [
 function demoRefreshIncident(mode) {
   const details = {
     bad_config: ["ERR_CONFIG_INVALID", "The persistent active config fails validation; a process restart will load the same invalid state.", "restore last-known-good config", "low", "revert_config"],
+    paraphrased_config: ["ERR_UNCLASSIFIED", "Retry budget exceeds the approved delivery policy. No error code is present, so retrieval must rely on log wording.", "restore last-known-good config", "medium", "revert_config"],
     dependency_down: ["ERR_DEPENDENCY_UNAVAILABLE", "The ledger dependency container is stopped; restarting payments alone cannot restore the dependency.", "start sentinel-dependency", "medium", "start_dependency"],
     bad_release: ["ERR_BAD_RELEASE", "The active release marker is invalid and persists across restarts.", "rollback to last-known-good release", "medium", "rollback_release"],
     unknown: ["ERR_UNKNOWN_FAULT", "An unclassified canary warning has no user-impact signal; safe behavior is escalation without action.", "", "low", "manual"],
+    impacting_unknown: ["ERR_UNCLASSIFIED", "An unrecognized ledger integrity fault has stopped payments; safe behavior is escalation without an ungrounded action.", "", "high", "manual"],
+    ambiguous: ["ERR_UNCLASSIFIED", "Config validation and release integrity both failed; multiple causes remain plausible and require human investigation.", "", "high", "manual"],
     db_pool: ["ERR_DB_CONN_POOL_EXHAUSTED", "Database connection pool is exhausted; new requests cannot acquire a connection.", "docker restart demo-server", "low", "restart_container"],
     ssl: ["ERR_TLS_CERT_EXPIRED", "The TLS certificate is expired. Renewal requires an engineer and is not automated.", "manual certificate renewal", "high", "manual"]
   }[mode] || ["ERR_UNKNOWN_FAULT", "Unclassified signal; escalation required.", "", "low", "manual"];
   const detected = Date.now() / 1000;
+  const needsEscalation = ["unknown", "impacting_unknown", "ambiguous"].includes(mode);
   demoServerUp = mode === "unknown";
   demoIncident = {
-    id: "INC-DEMO01", error_code: details[0], status: mode === "unknown" ? "escalated" : "waiting_approval", severity: details[3],
-    detected_at: detected, proposed_at: mode === "unknown" ? null : detected + 1.8, resolved_at: mode === "unknown" ? detected + 1.8 : null,
+    id: "INC-DEMO01", error_code: details[0], status: needsEscalation ? "escalated" : "waiting_approval", severity: details[3],
+    detected_at: detected, proposed_at: needsEscalation ? null : detected + 1.8, resolved_at: needsEscalation ? detected + 1.8 : null,
     diagnosis: details[1], fix: { command: details[2], risk: details[3], action: details[4] },
     events: [
       demoEvent("detected", `${details[0]} detected in app.log (4 error lines)`),
-      ...(mode === "unknown" ? [] : [demoEvent("retrieved", "Matched a runbook using the error signature and evidence")]),
+      ...(!needsEscalation ? [demoEvent("retrieved", mode === "paraphrased_config" ? "Semantic runbook match from paraphrased log evidence; no exact code" : "Matched a runbook using the error signature and evidence")] : []),
       demoEvent("diagnosed", details[1]),
-      ...(mode === "unknown" ? [demoEvent("escalated", "No safe runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
+      ...(needsEscalation ? [demoEvent("escalated", "No safe unambiguous runbook match; no action taken.")] : [demoEvent("proposed", `Human approval required before applying: ${details[2]}`)])
     ],
     resolution: mode === "unknown" ? "Correctly escalated without restarting a healthy service." : null
   };

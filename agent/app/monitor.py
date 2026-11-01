@@ -63,6 +63,8 @@ class LogMonitor:
         self._process([p.decode("utf-8", "replace").rstrip("\r") for p in parts])
 
     def _process(self, lines: list[str]) -> None:
+        if getattr(self, "paused", False):
+            return
         group: list[str] = []
 
         def flush() -> None:
@@ -70,6 +72,8 @@ class LogMonitor:
             if not group:
                 return
             codes = {c for line in group for c in CODE_RE.findall(line)}
+            if not codes:
+                codes = {"ERR_UNCLASSIFIED"}
             now = time.time()
             fresh = [c for c in sorted(codes) if now - self._last_seen.get(c, 0.0) > self.cooldown]
             if fresh:
@@ -97,3 +101,10 @@ class LogMonitor:
         self._last_seen.clear()
         self._buffer = b""
         self._offset = 0
+        self.paused = False
+
+    def pause_for_evaluation(self, paused: bool) -> None:
+        """Pause incident creation while a control strategy is under test."""
+        self.paused = paused
+        self._offset = os.path.getsize(self.path) if os.path.exists(self.path) else 0
+        self._buffer = b""
